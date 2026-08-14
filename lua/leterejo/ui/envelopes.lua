@@ -614,6 +614,33 @@ function M.redraw()
   end
 end
 
+-- Fetch what the server has, then read the list again.
+--
+-- Nothing arrives on its own yet, so this is the only thing that brings new
+-- mail down. The list is read again either way: a sync that failed leaves the
+-- index exactly as it was, which is still worth drawing.
+function M.sync()
+  local lieer = require("leterejo.lieer")
+  local account = state.account
+
+  if not lieer.configured(account) then
+    state.reset_list()
+    return M.refresh()
+  end
+
+  vim.notify(lang.t("syncing"), vim.log.levels.INFO)
+
+  lieer.sync(account, function(ok, res)
+    if not ok then
+      vim.notify(lang.e("sync_failed", tostring(res)), vim.log.levels.WARN)
+    end
+    if state.account == account then
+      state.reset_list()
+      M.refresh()
+    end
+  end)
+end
+
 -- Refetch and redraw the list.
 function M.refresh()
   local buf = find_buf()
@@ -955,8 +982,11 @@ local function setup_keymaps(buf)
     refresh = {
       desc = lang.t("desc_refresh"),
       handler = function()
-        state.reset_list()
-        M.refresh()
+        -- Fetch first, then read again. Re-reading the index alone is what
+        -- this used to do, and it can only ever show what the last sync
+        -- brought down — press it after sending and the copy of your own
+        -- message is not there, because nothing has been to the server.
+        M.sync()
       end,
     },
     compose = {
