@@ -61,11 +61,23 @@ function M.sync(account, on_done)
       -- vim.system finishes in a fast-event context where touching the screen
       -- crashes; hop back to the main loop first.
       vim.schedule(function()
-        if res.code == 0 then
-          return on_done(true)
-        end
-
         local text = (res.stderr or "") .. "\n" .. (res.stdout or "")
+
+        if res.code == 0 then
+          -- Exit zero does not mean the change went up. lieer refuses to push
+          -- a message whose remote state has moved on since the last pull, and
+          -- says so on stdout while exiting successfully:
+          --
+          --   update: remote has changed, will not update: <id> (…) (N > M)
+          --   push: not all changes could be pushed, will re-try at next push.
+          --
+          -- Reading that back is the difference between telling the user what
+          -- happened and leaving them with a change that quietly did not.
+          local refused = text:match("update: remote has changed[^\n]*")
+            or (text:find("not all changes could be pushed", 1, true) and text:match("push: not all changes[^\n]*"))
+
+          return on_done(true, nil, refused or nil)
+        end
 
         if text:find(BUSY, 1, true) and n < attempts then
           -- A timer and a write have met. Wait for the other one to finish.
