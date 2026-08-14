@@ -1029,7 +1029,7 @@ local function setup_keymaps(buf)
         carried[t] = true
       end
 
-      notmuch.mailboxes(state.account, function(ok2, all)
+      notmuch.tags(function(ok2, all)
         if not ok2 then
           return vim.notify(lang.t("prefix") .. tostring(all), vim.log.levels.ERROR)
         end

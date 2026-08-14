@@ -144,6 +144,7 @@ strings.en = {
   -- pickers
   pick_mailbox = "Tag",
   pick_tag = "Tag to put on or take off",
+  is_a_view = "(a view, not a tag)",
   tag_new = "make a new one…",
   tag_prompt = "New tag: ",
   tag_added = "Tagged %s",
@@ -348,6 +349,7 @@ strings.ja = {
 
   pick_mailbox = "タグ",
   pick_tag = "付け外しするタグ",
+  is_a_view = "(タグではなく、見え方の定義)",
   tag_new = "新しく作る…",
   tag_prompt = "新しいタグ: ",
   tag_added = "%s を付けました",

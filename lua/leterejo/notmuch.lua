@@ -1142,15 +1142,12 @@ function M.tag_for(account, mailbox)
   return mailbox
 end
 
--- The mailboxes there are, which is to say the tags in use.
---
--- Asking the server would list what Gmail has rather than what was synced down,
--- offering names with nothing behind them. The index is the honest answer.
+-- The tags in use, which is what can be put on a message.
 --
 -- Not every tag is a place: unread and attachment describe a message rather
 -- than say where it is, and offering them here would be offering to move mail
 -- into "unread". Those are listed in `mailbox_hidden_tags`.
-function M.mailboxes(account, on_done)
+function M.tags(on_done)
   run({ "search", "--format=json", "--output=tags", "*" }, function(ok, out)
     if not ok then
       return on_done(false, out)
@@ -1166,31 +1163,58 @@ function M.mailboxes(account, on_done)
       hidden[t] = true
     end
 
-    -- An account's own views are named here as well, and a view named after a
-    -- tag it narrows ("inbox", scoped to what one sync tool holds) would
-    -- otherwise be offered twice.
-    local seen, names = {}, {}
-
-    local function add(name)
-      if not hidden[name] and not seen[name] then
-        seen[name] = true
-        table.insert(names, name)
-      end
-    end
-
-    local a = (config.options.accounts or {})[account] or {}
-    for name in pairs(a.queries or {}) do
-      add(name)
-    end
-    for name in pairs(a.folders or {}) do
-      add(name)
-    end
+    local names = {}
     for _, t in ipairs(tags) do
-      add(t)
+      if not hidden[t] then
+        table.insert(names, t)
+      end
     end
 
     table.sort(names)
     on_done(true, names)
+  end)
+end
+
+-- Everything that can be looked at: the tags, and the views an account defined.
+--
+-- The two are handed back apart. A view is a query with a name — the Takeout
+-- archive is a directory, not a label — so it can be switched to but not put
+-- on a message. Offering one where a tag was meant created a tag called
+-- "Archive" here, which is exactly the confusion this keeps out.
+--
+--   on_done(ok, names, is_view)
+function M.mailboxes(account, on_done)
+  M.tags(function(ok, tags)
+    if not ok then
+      return on_done(false, tags)
+    end
+
+    local a = (config.options.accounts or {})[account] or {}
+    local is_view, names, seen = {}, {}, {}
+
+    local function add(name, view)
+      if not seen[name] then
+        seen[name] = true
+        is_view[name] = view or nil
+        table.insert(names, name)
+      end
+    end
+
+    -- An account's own views are named first: a view narrowing a tag it is
+    -- named after ("inbox", scoped to what one sync tool holds) is the one
+    -- that should answer to the name.
+    for name in pairs(a.queries or {}) do
+      add(name, true)
+    end
+    for name in pairs(a.folders or {}) do
+      add(name, true)
+    end
+    for _, t in ipairs(tags) do
+      add(t, false)
+    end
+
+    table.sort(names)
+    on_done(true, names, is_view)
   end)
 end
 
