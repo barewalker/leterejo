@@ -26,8 +26,12 @@ local function cache_dir()
   return dir
 end
 
-local function cache_path(id, part, name)
-  local ext = tostring(name or ""):match("%.([%w]+)$") or "img"
+local function cache_path(id, part, name, content_type)
+  -- The type first: a name split across RFC 2231 parameters can come back
+  -- without its extension, and what draws the image decides by extension.
+  local ext = require("leterejo.notmuch").extension_for(content_type)
+    or tostring(name or ""):match("%.([%w]+)$")
+    or "img"
   local digest = vim.fn.sha256(tostring(id) .. "\0" .. tostring(part)):sub(1, 32)
   return cache_dir() .. "/" .. digest .. "." .. ext:lower()
 end
@@ -94,7 +98,7 @@ function M.show(buf, id, attachments, rows)
   for i, att in ipairs(attachments or {}) do
     local row = rows and rows[i]
     if row and tostring(att.content_type):match("^image/") and att.part then
-      local path = cache_path(id, att.part, att.name)
+      local path = cache_path(id, att.part, att.name, att.content_type)
 
       if vim.fn.filereadable(path) == 1 then
         place(buf, path, row)
