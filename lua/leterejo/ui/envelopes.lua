@@ -1007,6 +1007,87 @@ local function setup_keymaps(buf)
     end)
   end
 
+  -- Put a tag on the message under the cursor, or take one off.
+  --
+  -- The ones it already carries are marked and listed first, so the same key
+  -- both adds and removes without asking which is meant. A name that is not in
+  -- the list yet can be typed: Gmail makes the label when the change is
+  -- pushed, so there is nowhere else to create one.
+  local function tag_message()
+    local e = envelope_under_cursor()
+    if not e then
+      return
+    end
+
+    notmuch.tags_of(e.id, function(ok, tags)
+      if not ok then
+        return vim.notify(lang.t("prefix") .. tostring(tags), vim.log.levels.ERROR)
+      end
+
+      local carried = {}
+      for _, t in ipairs(tags) do
+        carried[t] = true
+      end
+
+      notmuch.mailboxes(state.account, function(ok2, all)
+        if not ok2 then
+          return vim.notify(lang.t("prefix") .. tostring(all), vim.log.levels.ERROR)
+        end
+
+        local items, name_of = {}, {}
+
+        local function offer(name)
+          local line = (carried[name] and lang.t("tag_on") or lang.t("tag_off")) .. name
+          table.insert(items, line)
+          name_of[line] = name
+        end
+
+        -- What it already has, then everything else.
+        for _, t in ipairs(tags) do
+          offer(t)
+        end
+        for _, t in ipairs(all) do
+          if not carried[t] then
+            offer(t)
+          end
+        end
+
+        local NEW = "\0new"
+        table.insert(items, lang.t("tag_new"))
+        name_of[lang.t("tag_new")] = NEW
+
+        require("leterejo.pickers").pick(items, lang.t("pick_tag"), function(lines)
+          local add, remove, make_new = {}, {}, false
+
+          for _, line in ipairs(lines) do
+            local name = name_of[line]
+            if name == NEW then
+              make_new = true
+            elseif name and carried[name] then
+              table.insert(remove, name)
+            elseif name then
+              table.insert(add, name)
+            end
+          end
+
+          local actions = require("leterejo.actions")
+
+          if not make_new then
+            return actions.change_tags(e, add, remove)
+          end
+
+          -- Ask for the new one, then send everything as a single change.
+          vim.ui.input({ prompt = lang.t("tag_prompt") }, function(input)
+            if input and vim.trim(input) ~= "" then
+              table.insert(add, vim.trim(input))
+            end
+            actions.change_tags(e, add, remove)
+          end)
+        end, { multi = true })
+      end)
+    end)
+  end
+
   -- An action on the row under the cursor.
   local function on_row(fn)
     return function()
@@ -1052,6 +1133,7 @@ local function setup_keymaps(buf)
     archive = { desc = lang.t("desc_archive"), handler = act("archive") },
     spam = { desc = lang.t("desc_spam"), handler = act("spam") },
     move = { desc = lang.t("desc_move"), handler = act("move") },
+    tag = { desc = lang.t("desc_tag"), handler = tag_message },
     mailbox = {
       desc = lang.t("desc_mailbox"),
       handler = function()
@@ -1139,6 +1221,7 @@ M.HINTS = {
   { "search", "hint_search" },
   { "filters", "hint_filters" },
   { "mailbox", "hint_mailbox" },
+  { "tag", "hint_tag" },
   { "account", "hint_account" },
   { "attachments", "hint_attachments" },
   { "refresh", "hint_refresh" },
