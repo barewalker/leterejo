@@ -172,6 +172,15 @@ M.defaults = {
     "signed",
     "encrypted",
     "new",
+    -- Gmail's own sorting, when lieer has been told to keep it. These say
+    -- which tab a message was filed under, which is a fact about it rather
+    -- than a place to put one — and Gmail decides them, so putting one on by
+    -- hand means offering Gmail a label it will disagree with.
+    "CATEGORY_PERSONAL",
+    "CATEGORY_SOCIAL",
+    "CATEGORY_PROMOTIONS",
+    "CATEGORY_UPDATES",
+    "CATEGORY_FORUMS",
   },
 
   -- Pushing what changed here up to Gmail.
