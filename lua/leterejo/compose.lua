@@ -201,7 +201,11 @@ end
 -- the next field, clear this one, leave the shape alone.
 local function form_keys(buf)
   local function in_header()
-    return vim.api.nvim_win_get_cursor(0)[1] <= HEADER_LINES
+    local win = vim.api.nvim_get_current_win()
+    if vim.api.nvim_win_get_buf(win) ~= buf then
+      return false
+    end
+    return vim.api.nvim_win_get_cursor(win)[1] <= HEADER_LINES
   end
 
   -- These return keys rather than doing the work: an expression mapping is not
@@ -700,6 +704,9 @@ local function open_buffer(values, body, at)
   vim.api.nvim_win_set_buf(0, buf)
   vim.wo.wrap = true
   vim.wo.linebreak = true
+  -- Which field is being edited decides where the next thing typed or chosen
+  -- goes, so it should be visible rather than remembered.
+  vim.wo.cursorline = true
 
   -- On the first empty field, or where the caller asked. Nothing is gained by
   -- starting on From, which is already right.
@@ -803,13 +810,32 @@ end
 
 -- Suggesting an address ------------------------------------------------------
 
+-- The window showing the message being written, whichever window is current.
+--
+-- Asking window zero would answer about wherever the cursor happens to be —
+-- and the answer decides which field an address goes in, so it has to be the
+-- right window rather than the current one.
+local function compose_win(buf)
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_is_valid(w) and vim.api.nvim_win_get_buf(w) == buf then
+      return w
+    end
+  end
+  return nil
+end
+
 -- Which field the cursor is in, if it is in one.
-local function current_field()
-  local row = vim.api.nvim_win_get_cursor(0)[1]
+local function current_field(buf)
+  local win = compose_win(buf)
+  if not win then
+    return nil
+  end
+
+  local row = vim.api.nvim_win_get_cursor(win)[1]
   if row > HEADER_LINES then
     return nil
   end
-  return FIELDS[row].key, row
+  return FIELDS[row].key, row, FIELDS[row].label
 end
 
 -- Put an address in the field, after whatever is already there.
@@ -822,7 +848,11 @@ local function put_address(buf, row, address, replace)
   local out = (replace or value == "") and address or (value .. ", " .. address)
 
   vim.api.nvim_buf_set_lines(buf, row - 1, row, false, { out })
-  pcall(vim.api.nvim_win_set_cursor, 0, { row, #out })
+
+  local win = compose_win(buf)
+  if win then
+    pcall(vim.api.nvim_win_set_cursor, win, { row, #out })
+  end
 end
 
 -- Offer the addresses worth offering for the field under the cursor.
@@ -837,11 +867,15 @@ function M.suggest()
     return
   end
 
-  local key, row = current_field()
+  local key, row, label = current_field(buf)
   if not key then
     return vim.notify(lang.t("suggest_here_only"), vim.log.levels.INFO)
   end
 
+  -- Name the field being filled. Which one it is decides everything about what
+  -- happens next, so it should not have to be inferred from where the cursor
+  -- was a moment ago.
+  local prompt = lang.t("pick_address") .. " → " .. label
   local pick = require("leterejo.pickers").pick
 
   if key == "from" then
@@ -853,7 +887,7 @@ function M.suggest()
     end
     table.sort(items)
 
-    return pick(items, lang.t("pick_address"), function(line)
+    return pick(items, prompt, function(line)
       put_address(buf, row, (line:match("^(%S+)")), true)
     end)
   end
@@ -870,7 +904,7 @@ function M.suggest()
       return vim.notify(lang.t("addresses_collecting"), vim.log.levels.INFO)
     end
     opened = true
-    pick(list, lang.t("pick_address"), function(line)
+    pick(list, prompt, function(line)
       put_address(buf, row, vim.trim(line))
     end)
   end)
