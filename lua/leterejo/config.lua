@@ -56,6 +56,8 @@ M.defaults = {
   --                to drop yourself from a reply-all. himalaya's
   --                `account list` does not report addresses, so it goes here
   --   readonly   : refuse every operation that would modify mail
+  --   sent_mailbox : where to keep a copy of what this account sends. See
+  --                sent_mailbox further down
   --   unlock_command : how to open the password store for this account,
   --                e.g. { "pass", "show", "mail/work" }. See unlock_command
   --                further down for why this is worth setting
@@ -125,10 +127,17 @@ M.defaults = {
   --                  repository. It takes the lock without waiting, so a sync
   --                  meeting a timer fails at once rather than queueing
   --   retry_delay  : how long to wait before coming back (milliseconds)
+  --   interval     : minutes between fetches, or 0 for none. This is what
+  --                  lieer made possible: mbsync needed a passphrase out of
+  --                  gpg and so could not run unattended, while lieer holds an
+  --                  OAuth token in a file and never touches gpg. The list
+  --                  reloads afterwards without moving the reader, and a
+  --                  filtered list is left alone
   lieer = {
     executable = "gmi",
     dir = nil,
     sync_on_write = true,
+    interval = 0,
     timeout = 120000,
     retries = 2,
     retry_delay = 3000,
@@ -149,6 +158,20 @@ M.defaults = {
   -- Per account, set `unlock_command` in the accounts table above; this is the
   -- fallback. e.g. { "pass", "show", "mail/work" }
   unlock_command = nil,
+
+  -- Where a copy of a sent message is kept.
+  --
+  -- Per account, set `sent_mailbox` in the accounts table above; this is the
+  -- fallback. Leave it unset for a provider that files sent mail itself —
+  -- Gmail does so for anything sent through its own SMTP — because asking for
+  -- both leaves two copies. Set it for a server that does nothing unless told,
+  -- which is most of them.
+  --
+  -- Note that a copy in Sent is not the same as a copy in the inbox: a work
+  -- machine collecting mail over POP3 sees the inbox and nothing else, so a
+  -- Bcc to yourself is what reaches it. The two arrangements answer different
+  -- questions and can both be used.
+  sent_mailbox = nil,
 
   -- Where `upload` files a draft on the server, for reaching it from a phone
   -- or the webmail.

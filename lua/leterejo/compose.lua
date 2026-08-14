@@ -262,6 +262,18 @@ function M.send()
   local args = vim.deepcopy(m.args)
   table.insert(args, "--send")
 
+  -- Keep a copy where sent mail is kept, if this account keeps one.
+  --
+  -- Left unset for a provider that files sent mail itself — Gmail does, for
+  -- anything that went through its own SMTP — since asking for both leaves two
+  -- copies. It is worth setting for a server that does nothing unless told,
+  -- which is most of them: without it, sending leaves no trace anywhere.
+  local a = (config.options.accounts or {})[m.account] or {}
+  local sent = a.sent_mailbox or config.options.sent_mailbox
+  if type(sent) == "string" and sent ~= "" then
+    table.insert(args, "--save=" .. sent)
+  end
+
   local label = #m.bcc > 0 and lang.t("bcc_note", table.concat(m.bcc, ", ")) or ""
 
   -- Say both when they differ. Sending as one address through another's server
