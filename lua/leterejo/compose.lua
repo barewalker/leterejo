@@ -186,19 +186,25 @@ local function assemble(strict)
   end
 
   -- Assemble. Subject/body encoding and quoting are himalaya's work.
+  --
+  -- Every value is joined to its option with "=" rather than passed as the next
+  -- argument. himalaya's parser will not accept a value beginning with a hyphen
+  -- in the separate form, so a message opening with a line of dashes — a
+  -- signature, a rule above a quote — failed to send with
+  -- `unexpected argument '---'`. The joined form has no such rule.
   local args
   if pending.kind == "reply" then
     args = { "message", "reply", tostring(pending.id) }
     if pending.mailbox then
-      vim.list_extend(args, { "-m", pending.mailbox })
+      table.insert(args, "--mailbox=" .. pending.mailbox)
     end
     if pending.headline then
-      vim.list_extend(args, { "-Q", pending.headline })
+      table.insert(args, "--quote-headline=" .. pending.headline)
     end
   elseif pending.kind == "forward" then
     args = { "message", "forward", tostring(pending.id) }
     if pending.mailbox then
-      vim.list_extend(args, { "-m", pending.mailbox })
+      table.insert(args, "--mailbox=" .. pending.mailbox)
     end
   else
     args = { "message", "compose" }
@@ -207,28 +213,28 @@ local function assemble(strict)
   -- Always pass the sender. himalaya v2 does not fill From from its own
   -- configuration (v1's display-name and friends were removed), and without
   -- it sending stops at `No 'From:' header found in raw message`.
-  vim.list_extend(args, { "--from", from })
+  table.insert(args, "--from=" .. from)
 
   for _, a in ipairs(to) do
-    vim.list_extend(args, { "-t", a })
+    table.insert(args, "--to=" .. a)
   end
   for _, a in ipairs(cc) do
-    vim.list_extend(args, { "--cc", a })
+    table.insert(args, "--cc=" .. a)
   end
   for _, a in ipairs(bcc) do
-    vim.list_extend(args, { "--bcc", a })
+    table.insert(args, "--bcc=" .. a)
   end
 
   -- On reply and forward himalaya prefixes "Re:" / "Fwd:" itself, so only
   -- pass a subject when the user actually edited it.
   local subject = headers["subject"]
   if subject and subject ~= "" and subject ~= pending.original_subject then
-    vim.list_extend(args, { "-s", subject })
+    table.insert(args, "--subject=" .. subject)
   elseif pending.kind == "compose" then
-    vim.list_extend(args, { "-s", subject or "" })
+    table.insert(args, "--subject=" .. (subject or ""))
   end
 
-  vim.list_extend(args, { "--body", body })
+  table.insert(args, "--body=" .. body)
 
   return { buf = buf, args = args, account = account, from = from, bcc = bcc }
 end
@@ -294,7 +300,7 @@ function M.upload()
   end
 
   local args = vim.deepcopy(m.args)
-  vim.list_extend(args, { "--save", mailbox })
+  table.insert(args, "--save=" .. mailbox)
 
   vim.notify(lang.t("draft_uploading", mailbox, m.account), vim.log.levels.INFO)
 

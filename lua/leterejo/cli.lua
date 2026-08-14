@@ -68,9 +68,10 @@ end
 local function run(args, account, on_done, opts)
   local cmd = { config.options.executable }
 
+  -- Values are joined with "=", here and in every caller: himalaya's parser
+  -- rejects a value beginning with a hyphen when it is a separate argument.
   if account then
-    table.insert(cmd, "-a")
-    table.insert(cmd, account)
+    table.insert(cmd, "--account=" .. account)
   end
 
   -- Logs on stderr would confuse failure detection, so silence them.
