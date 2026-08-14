@@ -237,6 +237,16 @@ local function form_keys(buf)
   map("i", "<cr>", function()
     return in_header() and keys("<esc>j$a") or keys("<cr>")
   end)
+
+  -- Tab in a field asks who. It has no other meaning in an address.
+  vim.keymap.set("i", "<tab>", function()
+    if in_header() then
+      return vim.schedule(function()
+        M.suggest()
+      end)
+    end
+    vim.api.nvim_feedkeys(keys("<tab>"), "n", false)
+  end, { buffer = buf, silent = true })
 end
 
 -- What is in the header area, and what is under it.
@@ -672,6 +682,8 @@ local function open_buffer(values, body, at)
     send = { handler = M.send, desc = lang.t("desc_send") },
     save = { handler = M.save, desc = lang.t("desc_save_draft") },
     upload = { handler = M.upload, desc = lang.t("desc_upload_draft") },
+    address = { handler = M.suggest, desc = lang.t("desc_suggest") },
+    signature = { handler = M.pick_signature, desc = lang.t("desc_signature") },
     discard = { handler = discard, desc = lang.t("desc_discard") },
   })
 
@@ -703,7 +715,6 @@ local function open_buffer(values, body, at)
   end
 
   pcall(vim.api.nvim_win_set_cursor, 0, { math.min(row, vim.api.nvim_buf_line_count(buf)), 0 })
-  vim.cmd("startinsert!")
 
   return buf
 end
@@ -788,6 +799,135 @@ local function body_lines(account, kind, envelope)
   end
 
   return body, cursor
+end
+
+-- Suggesting an address ------------------------------------------------------
+
+-- Which field the cursor is in, if it is in one.
+local function current_field()
+  local row = vim.api.nvim_win_get_cursor(0)[1]
+  if row > HEADER_LINES then
+    return nil
+  end
+  return FIELDS[row].key, row
+end
+
+-- Put an address in the field, after whatever is already there.
+--
+-- Except in From, which replaces: a message has one sender, and a second one
+-- appended there would be a message nobody can send.
+local function put_address(buf, row, address, replace)
+  local line = vim.api.nvim_buf_get_lines(buf, row - 1, row, false)[1] or ""
+  local value = vim.trim(line):gsub(",%s*$", "")
+  local out = (replace or value == "") and address or (value .. ", " .. address)
+
+  vim.api.nvim_buf_set_lines(buf, row - 1, row, false, { out })
+  pcall(vim.api.nvim_win_set_cursor, 0, { row, #out })
+end
+
+-- Offer the addresses worth offering for the field under the cursor.
+--
+-- From is answered from the accounts, since those are the addresses this setup
+-- can actually send as. The rest are answered from everyone written to or
+-- heard from, which notmuch knows and this keeps in a file — collecting them
+-- takes 18 seconds and nobody typing an address should wait for that.
+function M.suggest()
+  local buf = find_buf()
+  if not buf then
+    return
+  end
+
+  local key, row = current_field()
+  if not key then
+    return vim.notify(lang.t("suggest_here_only"), vim.log.levels.INFO)
+  end
+
+  local pick = require("leterejo.pickers").pick
+
+  if key == "from" then
+    local items = {}
+    for name, a in pairs(config.options.accounts or {}) do
+      if a.email and a.email ~= "" then
+        table.insert(items, a.email .. "   " .. name)
+      end
+    end
+    table.sort(items)
+
+    return pick(items, lang.t("pick_address"), function(line)
+      put_address(buf, row, (line:match("^(%S+)")), true)
+    end)
+  end
+
+  -- The list may arrive twice: what was kept, and then what a refresh found.
+  -- Only the first opens a picker; the second would land on top of it.
+  local opened = false
+
+  require("leterejo.notmuch").addresses(function(list)
+    if opened then
+      return
+    end
+    if #list == 0 then
+      return vim.notify(lang.t("addresses_collecting"), vim.log.levels.INFO)
+    end
+    opened = true
+    pick(list, lang.t("pick_address"), function(line)
+      put_address(buf, row, vim.trim(line))
+    end)
+  end)
+end
+
+-- Signatures -------------------------------------------------------------------
+
+-- Replace whatever signature is there, or add one where there is none.
+--
+-- Found by the delimiter mail has used since RFC 3676: a line of exactly "-- ".
+-- Anything below it belongs to the signature and goes with it.
+local function replace_signature(buf, lines)
+  local all = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+
+  local at = nil
+  for i = #all, HEADER_LINES + 1, -1 do
+    if all[i] == "-- " or all[i] == "--" then
+      at = i
+      break
+    end
+  end
+
+  local block = {}
+  if #lines > 0 then
+    table.insert(block, "-- ")
+    vim.list_extend(block, lines)
+  end
+
+  if at then
+    return vim.api.nvim_buf_set_lines(buf, at - 1, -1, false, block)
+  end
+  if #block > 0 then
+    vim.api.nvim_buf_set_lines(buf, #all, -1, false, vim.list_extend({ "" }, block))
+  end
+end
+
+-- Choose which signature this message ends with.
+function M.pick_signature()
+  local buf = find_buf()
+  if not buf then
+    return
+  end
+
+  local named = config.options.signatures or {}
+  local names = vim.tbl_keys(named)
+  table.sort(names)
+
+  if #names == 0 then
+    return vim.notify(lang.t("no_signatures"), vim.log.levels.INFO)
+  end
+
+  local none = lang.t("signature_none")
+  table.insert(names, none)
+
+  require("leterejo.pickers").pick(names, lang.t("pick_signature"), function(name)
+    replace_signature(buf, name == none and {} or as_lines(named[name]))
+  end)
 end
 
 -- Open a draft that was written earlier.

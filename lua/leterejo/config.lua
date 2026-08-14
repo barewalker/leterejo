@@ -120,6 +120,15 @@ M.defaults = {
   signature = nil,
   signature_file = nil,
 
+  -- The signatures to choose between, by name. `signature` above is the one a
+  -- message starts with; this is what the signature key offers instead.
+  --
+  -- e.g. signatures = {
+  --        work = "Taro Yamada\nExample Co., Ltd.",
+  --        short = "山田",
+  --      }
+  signatures = {},
+
   -- The tags standing for the states this plugin knows by name.
   --
   -- A mailbox is a tag and a change of state is a change of tag, because on
@@ -298,6 +307,16 @@ M.defaults = {
     -- Path to a notmuch config. nil uses notmuch's own default.
     config = nil,
 
+    -- Which mail the address suggestions are collected from, and how long a
+    -- collection stays good for (seconds).
+    --
+    -- `notmuch address` walks every matching message — 18 seconds over 32,000
+    -- here — so the answer is kept in a file and read from there. Nobody
+    -- typing an address should wait for that, and a day-old list of people you
+    -- have written to is not meaningfully worse than a fresh one.
+    address_query = "date:2years..",
+    address_max_age = 86400,
+
     -- Read the subject and sender from the message file rather than trust
     -- notmuch's decoding of them.
     --
@@ -383,6 +402,8 @@ M.defaults = {
     compose = {
       send = "<leader>hs", -- send
       save = "<leader>hw", -- save the draft here (:w does the same)
+      address = "<leader>ha", -- suggest an address for the field under the cursor
+      signature = "<leader>hg", -- choose which signature to end with
       upload = "<leader>hu", -- put a copy of the draft in the server's Drafts
       discard = "<leader>hq", -- discard
     },
