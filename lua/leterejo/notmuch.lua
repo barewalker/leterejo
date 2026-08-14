@@ -1043,6 +1043,100 @@ function M.save_attachments(id, dir, on_done)
   end)
 end
 
+-- Everyone written to, and everyone written from ---------------------------
+--
+-- `notmuch address` walks every matching message, so it costs 18 seconds over
+-- this mailbox and cannot be run when someone is waiting to type an address.
+-- It is kept in a file instead and read from there, refreshed behind whoever
+-- asked. A day-old list of correspondents is not meaningfully worse than a
+-- fresh one.
+
+local addresses_path = nil
+
+local function address_file()
+  if not addresses_path then
+    local dir = vim.fn.stdpath("cache") .. "/leterejo"
+    vim.fn.mkdir(dir, "p")
+    addresses_path = dir .. "/addresses.txt"
+  end
+  return addresses_path
+end
+
+local function read_addresses()
+  local path = address_file()
+  if vim.fn.filereadable(path) ~= 1 then
+    return nil, nil
+  end
+  local ok, lines = pcall(vim.fn.readfile, path)
+  return ok and lines or nil, vim.fn.getftime(path)
+end
+
+local refreshing = false
+
+-- Collect them again, in the background.
+function M.refresh_addresses(on_done)
+  if refreshing then
+    return
+  end
+  refreshing = true
+
+  local opts = config.options.notmuch or {}
+  run({
+    "address",
+    "--output=recipients",
+    "--output=sender",
+    "--deduplicate=address",
+    "--sort=newest-first",
+    opts.address_query or "date:2years..",
+  }, function(ok, out)
+    refreshing = false
+    if not ok then
+      return on_done and on_done(nil)
+    end
+
+    local found = {}
+    for line in tostring(out):gmatch("[^\n]+") do
+      line = vim.trim(line)
+      if line ~= "" then
+        table.insert(found, line)
+      end
+    end
+
+    pcall(vim.fn.writefile, found, address_file())
+    if on_done then
+      on_done(found)
+    end
+  end)
+end
+
+-- The addresses to offer, and whether they are worth collecting again.
+--
+--   on_done(list, refreshing)
+--
+-- Answers from the file at once, so a picker opens without waiting, and starts
+-- a refresh when the file is old or missing. A refresh that finds more calls
+-- back a second time.
+function M.addresses(on_done)
+  local cached, when = read_addresses()
+  local max_age = (config.options.notmuch or {}).address_max_age or 86400
+  local stale = not when or (os.time() - when) > max_age
+
+  if cached and #cached > 0 then
+    on_done(cached, stale)
+    if stale then
+      M.refresh_addresses(function() end)
+    end
+    return
+  end
+
+  on_done({}, true)
+  M.refresh_addresses(function(found)
+    if found and #found > 0 then
+      on_done(found, false)
+    end
+  end)
+end
+
 -- Tags ------------------------------------------------------------------
 --
 -- Everything that changes a message changes a tag, and nothing else. Gmail has
