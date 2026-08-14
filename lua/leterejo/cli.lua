@@ -91,19 +91,24 @@ local function run(args, account, on_done, opts)
     -- screen or most APIs crashes; hop back to the main loop first.
     vim.schedule(function()
       if res.code == 0 then
-        on_done(true, res.stdout or "")
-      else
-        on_done(false, friendly_error(res.stderr, res.stdout))
+        return on_done(true, res.stdout or "")
       end
+
+      -- A locked password store is worth telling apart from every other
+      -- failure: it is the one the user can do something about, and there is
+      -- something this plugin can do about it too (see M.unlock).
+      local text = (res.stderr or "") .. "\n" .. (res.stdout or "")
+      local kind = is_passphrase_error(text) and "passphrase" or nil
+      on_done(false, friendly_error(res.stderr, res.stdout), kind)
     end)
   end)
 end
 
 -- Fetch JSON output and decode it.
 function M.json(args, account, on_done)
-  run(args, account, function(ok, out)
+  run(args, account, function(ok, out, kind)
     if not ok then
-      return on_done(false, out)
+      return on_done(false, out, kind)
     end
 
     local decoded_ok, decoded = pcall(vim.json.decode, out)
@@ -136,6 +141,63 @@ function M.list_accounts(on_done)
     end
     on_done(true, names)
   end)
+end
+
+-- Unlocking the password store ------------------------------------------------
+--
+-- himalaya reads the SMTP password from `pass`, which asks gpg-agent, which
+-- runs pinentry when its cache is cold. pinentry-curses draws on GPG_TTY — the
+-- terminal Neovim itself is holding — so the prompt lands on top of the editor
+-- and the keys typed at it go to the editor instead. Nothing can be entered,
+-- and the screen is left in a mess.
+--
+-- The way out is to give pinentry a terminal of its own. A terminal buffer has
+-- one, and `GPG_TTY=$(tty)` inside it points pinentry at that rather than at
+-- the outer screen. The prompt then behaves like any other program in a split.
+--
+-- The output goes to /dev/null on purpose: what the command prints is the
+-- password.
+function M.unlock(account, on_done)
+  local a = (config.options.accounts or {})[account] or {}
+  local cmd = a.unlock_command or config.options.unlock_command
+
+  if type(cmd) ~= "table" or #cmd == 0 then
+    return on_done(false, lang.t("err_no_unlock_command", tostring(account or "")))
+  end
+
+  local quoted = {}
+  for _, part in ipairs(cmd) do
+    table.insert(quoted, vim.fn.shellescape(part))
+  end
+
+  local script = "export GPG_TTY=$(tty); " .. table.concat(quoted, " ") .. " >/dev/null"
+
+  local from = vim.api.nvim_get_current_win()
+  vim.cmd("botright split")
+  vim.cmd("enew")
+
+  local win, buf = vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf()
+  vim.api.nvim_win_set_height(win, 12)
+
+  vim.fn.jobstart({ "sh", "-c", script }, {
+    term = true,
+    on_exit = function(_, code)
+      vim.schedule(function()
+        if vim.api.nvim_win_is_valid(win) and #vim.api.nvim_list_wins() > 1 then
+          vim.api.nvim_win_close(win, true)
+        end
+        if vim.api.nvim_buf_is_valid(buf) then
+          vim.api.nvim_buf_delete(buf, { force = true })
+        end
+        if vim.api.nvim_win_is_valid(from) then
+          vim.api.nvim_set_current_win(from)
+        end
+        on_done(code == 0, code == 0 and lang.t("unlocked") or lang.t("unlock_failed"))
+      end)
+    end,
+  })
+
+  vim.cmd("startinsert")
 end
 
 return M
