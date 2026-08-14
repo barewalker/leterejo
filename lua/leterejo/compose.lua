@@ -94,6 +94,13 @@ function M.account_for(address)
 end
 
 -- Split the buffer into headers and body.
+--
+-- A blank line ends the headers, as in the message itself. But a line that is
+-- simply not a header ends them too: writing the first sentence straight after
+-- Subject, without the blank line, is an easy thing to do and used to lose that
+-- sentence — it was skipped as an unrecognised header, and the body began at
+-- whatever blank line came next. A dropped opening sentence is not something
+-- the sender would notice before it left.
 local function parse_buffer(buf)
   local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
   local headers, body_start = {}, #lines + 1
@@ -103,9 +110,15 @@ local function parse_buffer(buf)
       body_start = i + 1
       break
     end
+
     local name, value = line:match("^([%w%-]+):%s*(.*)$")
     if name then
       headers[name:lower()] = vim.trim(value)
+    elseif not line:match("^[ \t]") then
+      -- Anything that is neither a header nor a folded continuation of the one
+      -- above (RFC 5322 §2.2.3) is where the body starts.
+      body_start = i
+      break
     end
   end
 
