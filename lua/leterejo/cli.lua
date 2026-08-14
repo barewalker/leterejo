@@ -1,12 +1,12 @@
 -- The himalaya CLI call layer.
 --
--- Only writing comes through here now: reading is answered by the local notmuch
--- index (see notmuch.lua), which is why nothing in this file is on the path
--- between a keystroke and the list appearing.
+-- Sending, and the account list that goes with it. Reading is answered by the
+-- notmuch index and changing a message is a change of tag, so this is no longer
+-- on the path between a keystroke and the screen.
 --
--- himalaya v2 opens a fresh TCP+TLS+SASL session per command, so every operation
--- costs hundreds of milliseconds to several seconds. Everything runs
--- asynchronously to keep the screen responsive.
+-- himalaya v2 opens a fresh TCP+TLS+SASL session per command, so a send costs
+-- hundreds of milliseconds to several seconds. It runs asynchronously like
+-- everything else.
 local config = require("leterejo.config")
 local lang = require("leterejo.lang")
 
@@ -134,102 +134,6 @@ function M.list_accounts(on_done)
       table.insert(names, a.name or a.id)
     end
     on_done(true, names)
-  end)
-end
-
--- Flags -----------------------------------------------------------------
---
--- v2 names flags by their IANA keyword without the backslash, one -f per flag,
--- and accepts only seen, answered, flagged and draft. \Deleted is not on that
--- list, so there is no way to mark a message deleted through this command —
--- deleting means moving to the trash mailbox instead (see M.move_messages).
-
--- Turn what the screen is holding into ids himalaya will accept.
---
--- The screen carries the Message-ID, because that is the only handle notmuch
--- can look a message up by. IMAP wants its own UID, which mbsync happens to
--- leave in the file name as ",U=<n>" — so recover it here. Reads and writes
--- therefore disagree on what an id is, and this is the one place that knows.
-local function resolve_ids(ids, on_done)
-  local notmuch = require("leterejo.notmuch")
-
-  local out, pending, failed = {}, #ids, nil
-  if pending == 0 then
-    return on_done(true, {})
-  end
-
-  for i, id in ipairs(ids) do
-    notmuch.uid_of(id, function(ok, uid)
-      if ok then
-        out[i] = uid
-      else
-        failed = failed or uid
-      end
-      pending = pending - 1
-      if pending == 0 then
-        if failed then
-          return on_done(false, failed)
-        end
-        on_done(true, out)
-      end
-    end)
-  end
-end
-
-local function send_flag_command(verb, account, mailbox, ids, flags, on_done)
-  local args = { "flag", verb }
-
-  if mailbox then
-    vim.list_extend(args, { "-m", mailbox })
-  end
-  for _, f in ipairs(flags) do
-    vim.list_extend(args, { "-f", f })
-  end
-  for _, id in ipairs(ids) do
-    table.insert(args, tostring(id))
-  end
-
-  M.text(args, account, on_done)
-end
-
-local function flag_command(verb, account, mailbox, ids, flags, on_done)
-  resolve_ids(ids, function(ok, resolved)
-    if not ok then
-      return on_done(false, resolved)
-    end
-    send_flag_command(verb, account, mailbox, resolved, flags, on_done)
-  end)
-end
-
-function M.add_flags(account, mailbox, ids, flags, on_done)
-  flag_command("add", account, mailbox, ids, flags, on_done)
-end
-
-function M.remove_flags(account, mailbox, ids, flags, on_done)
-  flag_command("remove", account, mailbox, ids, flags, on_done)
-end
-
--- Move messages between mailboxes of the same account.
---
--- Over IMAP this is UID MOVE (RFC 6851), so the copy and the removal happen
--- server-side in one step. Both names go through the account's [mailbox.alias]
--- map, which is why "trash" works without spelling out "[Gmail]/ゴミ箱".
-function M.move_messages(account, from, to, ids, on_done)
-  resolve_ids(ids, function(ok, resolved)
-    if not ok then
-      return on_done(false, resolved)
-    end
-
-    local args = { "message", "move", "-t", to }
-
-    if from then
-      vim.list_extend(args, { "-f", from })
-    end
-    for _, id in ipairs(resolved) do
-      table.insert(args, tostring(id))
-    end
-
-    M.text(args, account, on_done)
   end)
 end
 

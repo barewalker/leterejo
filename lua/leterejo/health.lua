@@ -140,6 +140,104 @@ local function check_notmuch(config)
   )
 end
 
+-- lieer -----------------------------------------------------------------------
+--
+-- What carries a change of tag up to Gmail. Nothing is guessed about where its
+-- repository is, so a plugin that reads perfectly can still silently fail to
+-- write, and this is the section that says why.
+
+local function lieer_dirs(config)
+  local found = {}
+
+  local dir = (config.options.lieer or {}).dir
+  if dir then
+    table.insert(found, { name = "lieer.dir", path = vim.fn.expand(dir) })
+  end
+
+  local names = vim.tbl_keys(config.options.accounts or {})
+  table.sort(names)
+  for _, name in ipairs(names) do
+    local a = config.options.accounts[name]
+    if a.lieer_dir then
+      table.insert(found, { name = name, path = vim.fn.expand(a.lieer_dir) })
+    end
+  end
+
+  return found
+end
+
+-- What lieer was told to do, from the repository's own configuration.
+--
+-- Two of its settings are worth reporting. The default timeout is ten minutes,
+-- and a request that stalls simply sits there for all of it, saying nothing.
+-- And removing local messages is on by default, which is the setting that
+-- decides whether a sync can delete mail from this machine.
+local function check_repository(entry)
+  local file = entry.path .. "/.gmailieer.json"
+  if vim.fn.filereadable(file) ~= 1 then
+    return vim.health.error(entry.name .. ": no .gmailieer.json in " .. entry.path, {
+      "This is not a lieer repository, so nothing can be pushed from it.",
+      "Point it at the directory holding .gmailieer.json.",
+    })
+  end
+
+  local ok, decoded = pcall(function()
+    return vim.json.decode(table.concat(vim.fn.readfile(file), "\n"))
+  end)
+  if not ok or type(decoded) ~= "table" then
+    return vim.health.warn(entry.name .. ": could not read " .. file)
+  end
+
+  vim.health.ok(entry.name .. ": " .. entry.path .. "  [" .. tostring(decoded.account) .. "]")
+
+  local timeout = tonumber(decoded.timeout) or 0
+  if timeout <= 0 or timeout >= 600 then
+    vim.health.warn(("%s: lieer's own timeout is %s seconds"):format(entry.name, tostring(decoded.timeout)), {
+      "A stalled request hangs for that long without saying anything.",
+      "`gmi set --timeout 60` in the repository.",
+    })
+  end
+
+  if decoded.remove_local_messages == true then
+    vim.health.info(entry.name .. ": a sync may delete mail from this machine "
+      .. "(remove_local_messages is on)")
+  end
+end
+
+local function check_lieer(config)
+  vim.health.start("leterejo: lieer (pushing changes back)")
+
+  local opts = config.options.lieer or {}
+  local exe = opts.executable or "gmi"
+
+  if opts.sync_on_write == false then
+    vim.health.info("sync_on_write is off: changes stay in the index until something else syncs")
+  end
+
+  if vim.fn.executable(exe) ~= 1 then
+    return vim.health.error("`" .. exe .. "` not found on PATH", {
+      "Marking read, archiving and the rest change a notmuch tag, and this",
+      "is what carries that change to Gmail. Without it they stay here.",
+      "https://github.com/gauteh/lieer",
+    })
+  end
+  vim.health.ok(exe .. " found")
+
+  local dirs = lieer_dirs(config)
+  if #dirs == 0 then
+    return vim.health.warn("No lieer repository configured", {
+      "Changes will be made in the index and go no further.",
+      'Set lieer = { dir = "~/Mail/<repo>" }, or `lieer_dir` per account.',
+      "Nothing is guessed: the index can span several repositories, and",
+      "the wrong one would push one account's changes at another.",
+    })
+  end
+
+  for _, entry in ipairs(dirs) do
+    check_repository(entry)
+  end
+end
+
 -- Optional programs -------------------------------------------------------------
 
 local function check_renderer(config)
@@ -342,6 +440,7 @@ function M.check()
   check_neovim()
   check_himalaya(config)
   check_notmuch(config)
+  check_lieer(config)
   check_renderer(config)
   check_images(config)
   check_handlers(config)

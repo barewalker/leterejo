@@ -44,7 +44,7 @@ end
 -- defined by query. Asking the server would offer names with nothing behind
 -- them, since only part of it was ever synced down.
 function M.pick_mailbox_name(prompt, on_choice)
-  require("leterejo.notmuch").folders(state.account, function(ok, res)
+  require("leterejo.notmuch").mailboxes(state.account, function(ok, res)
     if not ok then
       return vim.notify(lang.t("prefix") .. res, vim.log.levels.ERROR)
     end

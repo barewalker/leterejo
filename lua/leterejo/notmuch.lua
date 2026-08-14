@@ -125,9 +125,8 @@ local function envelope_of(msg)
   end
 
   return {
-    -- The message id, not the IMAP UID. notmuch can look a message up by this
-    -- and nothing else; the UID is only recoverable from the file name, which
-    -- is what uid_of is for.
+    -- The Message-ID, which is the only handle notmuch looks a message up by.
+    -- Reading and writing now agree on that, since writing is tagging.
     id = msg.id,
     subject = h.Subject or "",
     from = parse_addrs(h.From),
@@ -731,54 +730,69 @@ function M.save_attachments(id, dir, on_done)
   end)
 end
 
--- Recover the IMAP UID, which mbsync stores in the file name as ",U=<n>".
--- The write path still goes through himalaya over IMAP and needs it.
+-- Tags ------------------------------------------------------------------
 --
--- Mail imported from a Takeout archive never has one: it came over HTTPS, not
--- IMAP, so the server has no handle to hand back. Those messages can be read
--- and searched but not changed, and saying so is more use than reporting a
--- failure that sounds like something is broken.
-function M.uid_of(id, on_done)
-  run_json({
-    "show",
-    "--format=json",
-    "--body=false",
-    "--entire-thread=false",
-    id_query(id),
-  }, function(ok, tree)
+-- Everything that changes a message changes a tag, and nothing else. Gmail has
+-- no folders, only labels; lieer keeps those labels and notmuch's tags in step,
+-- so marking a message read is `-unread` and archiving it is `-inbox`.
+--
+-- None of this reaches Gmail. It edits the index, in single-digit milliseconds,
+-- and the sync that follows is what carries it up (see lieer.lua).
+
+-- Add and remove tags on one message.
+function M.tag(id, change, on_done)
+  local args = { "tag" }
+
+  for _, t in ipairs(change.add or {}) do
+    table.insert(args, "+" .. t)
+  end
+  for _, t in ipairs(change.remove or {}) do
+    table.insert(args, "-" .. t)
+  end
+
+  if #args == 1 then
+    return on_done(true, "")
+  end
+
+  -- Everything after "--" is the query, so a tag named like an option cannot
+  -- be read as one.
+  table.insert(args, "--")
+  table.insert(args, id_query(id))
+
+  run(args, on_done)
+end
+
+-- The tags one message carries now.
+--
+-- Used to check that a write survived the sync: lieer reverts a change it could
+-- not push, so the tag we set is the only honest evidence that it stuck.
+function M.tags_of(id, on_done)
+  run({ "search", "--format=json", "--output=tags", id_query(id) }, function(ok, out)
     if not ok then
-      return on_done(false, tree)
+      return on_done(false, out)
     end
-
-    local seen = false
-    for _, msg in ipairs(collect_messages(tree, {})) do
-      for _, path in ipairs(msg.filename or {}) do
-        seen = true
-        local uid = tostring(path):match(",U=(%d+)")
-        if uid then
-          return on_done(true, uid)
-        end
-      end
+    local decoded_ok, tags = pcall(vim.json.decode, vim.trim(out) ~= "" and out or "[]")
+    if not decoded_ok or type(tags) ~= "table" then
+      return on_done(false, lang.t("err_notmuch"))
     end
-
-    -- Found the message but no UID in any of its file names: it is archive-only.
-    on_done(false, lang.t(seen and "err_archive_only" or "err_notmuch"))
+    on_done(true, tags)
   end)
 end
 
--- Names this plugin uses for mailboxes, mapped to the directories a sync tool
--- actually created.
---
--- The short names come from himalaya's [mailbox.alias], which expands them
--- server-side; notmuch has no such thing and matches the path literally, case
--- included. Without this "inbox" quietly finds nothing at all.
-local DEFAULT_FOLDERS = {
-  inbox = "INBOX",
-}
+-- Mailboxes -------------------------------------------------------------
 
--- Turn a mailbox name into a query. Kept deliberately thin: a store synced by
--- mbsync has folders, one synced by lieer has none and uses tags instead, and
--- only this function should have to know the difference.
+-- Quote a name for use in a query. Gmail labels carry slashes, dots and spaces,
+-- all of which the query parser would otherwise read as syntax.
+local function quoted(prefix, name)
+  return prefix .. '"' .. tostring(name):gsub('"', '\\"') .. '"'
+end
+
+-- Turn a mailbox name into a query.
+--
+-- A mailbox is a tag, because on Gmail a mailbox is a label. Kept deliberately
+-- thin so the exceptions stay in one place: a store synced by mbsync has real
+-- folders, and the Takeout archive is split by year and is not one directory at
+-- all, so accounts can name a folder or spell out a query instead.
 function M.query_for(account, mailbox)
   local a = (config.options.accounts or {})[account] or {}
   if a.query_for then
@@ -787,61 +801,70 @@ function M.query_for(account, mailbox)
 
   local name = mailbox or "inbox"
 
-  -- Some views are not one directory. The Takeout archive is split by year, so
-  -- reaching all of it means "path:archive/**" rather than any single folder.
-  -- Accounts spell those out themselves.
   local raw = (a.queries or {})[name]
   if raw then
     return raw
   end
 
-  -- The mailbox may arrive either as the short name used in keymaps ("inbox")
-  -- or as the name the server reported ("INBOX"), so try both.
-  local folders = a.folders or {}
-  name = folders[name] or folders[name:lower()] or DEFAULT_FOLDERS[name:lower()] or name
+  local folder = (a.folders or {})[name]
+  if folder then
+    return quoted("folder:", folder)
+  end
 
-  -- Gmail's own folders carry brackets and spaces ("[Gmail]/Sent Mail"), which
-  -- the query parser would otherwise read as syntax.
-  return 'folder:"' .. name:gsub('"', '\\"') .. '"'
+  return quoted("tag:", name)
 end
 
--- The folders that actually hold mail here.
+-- The tag a mailbox stands for, or nil when it stands for something else.
 --
--- Asking himalaya would list what the server has, which is not the same thing:
--- only INBOX is synced down, so every other name would come back empty. What is
--- on disk is the honest answer, plus whatever views the account defined by
--- query.
+-- Leaving a mailbox means dropping its tag, so an action needs to know whether
+-- there is one. A folder or a hand-written query has no tag to drop.
+function M.tag_for(account, mailbox)
+  local a = (config.options.accounts or {})[account] or {}
+  if not mailbox or a.query_for then
+    return nil
+  end
+  if (a.queries or {})[mailbox] or (a.folders or {})[mailbox] then
+    return nil
+  end
+  return mailbox
+end
+
+-- The mailboxes there are, which is to say the tags in use.
 --
--- notmuch itself cannot list folders — `search --output=` takes only summary,
--- threads, messages, files and tags — so walk the tree instead. A Maildir is a
--- directory holding cur/new/tmp, and there is no reason to descend into those:
--- reading a `cur` with twenty thousand messages in it would cost more than
--- everything else here put together.
-function M.folders(account, on_done)
-  run({ "config", "get", "database.mail_root" }, function(ok, out)
+-- Asking the server would list what Gmail has rather than what was synced down,
+-- offering names with nothing behind them. The index is the honest answer.
+--
+-- Not every tag is a place: unread and attachment describe a message rather
+-- than say where it is, and offering them here would be offering to move mail
+-- into "unread". Those are listed in `mailbox_hidden_tags`.
+function M.mailboxes(account, on_done)
+  run({ "search", "--format=json", "--output=tags", "*" }, function(ok, out)
     if not ok then
       return on_done(false, out)
     end
 
-    local root = vim.trim(out)
-    local names = {}
+    local decoded_ok, tags = pcall(vim.json.decode, vim.trim(out) ~= "" and out or "[]")
+    if not decoded_ok or type(tags) ~= "table" then
+      return on_done(false, lang.t("err_notmuch"))
+    end
 
-    if root ~= "" and vim.fn.isdirectory(root) == 1 then
-      local leaves = { cur = true, new = true, tmp = true }
-      for path, kind in vim.fs.dir(root, {
-        depth = 8,
-        skip = function(name)
-          return not leaves[name]
-        end,
-      }) do
-        if kind == "directory" and path:sub(-4) == "/cur" then
-          table.insert(names, path:sub(1, -5))
-        end
+    local hidden = {}
+    for _, t in ipairs(config.options.mailbox_hidden_tags or {}) do
+      hidden[t] = true
+    end
+
+    local names = {}
+    for _, t in ipairs(tags) do
+      if not hidden[t] then
+        table.insert(names, t)
       end
     end
 
     local a = (config.options.accounts or {})[account] or {}
     for name in pairs(a.queries or {}) do
+      table.insert(names, name)
+    end
+    for name in pairs(a.folders or {}) do
       table.insert(names, name)
     end
 
