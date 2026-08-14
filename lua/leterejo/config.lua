@@ -1,0 +1,395 @@
+-- Defaults, merged with whatever the user passes to setup().
+local M = {}
+
+M.defaults = {
+  -- Language of the interface: "en" or "ja". English by default.
+  -- lang.extend() can add or override individual messages.
+  lang = "en",
+
+  -- The himalaya executable; a bare name is fine when it is on PATH.
+  executable = "himalaya",
+
+  -- Account to open with. nil uses himalaya's default (default = true).
+  account = nil,
+
+  -- Messages per page, for accounts that page. nil fits the window height.
+  page_size = nil,
+
+  -- One long list instead of pages.
+  --
+  -- Paging exists because a fetch over IMAP costs seconds; reading from a local
+  -- index costs tens of milliseconds, so there is nothing to ration and the
+  -- break at fifty is just an interruption. Rows are added as the cursor nears
+  -- the end.
+  --
+  --   "auto"  continuous where reading is local, paged over IMAP
+  --   true    always continuous, including over IMAP (a fetch stalls the scroll)
+  --   false   always paged
+  continuous = "auto",
+
+  -- How many rows to add per batch while scrolling a continuous list.
+  chunk_size = 200,
+
+  -- How close to the end the cursor has to come before the next batch is asked
+  -- for. Large enough that the rows arrive before they are looked at.
+  chunk_lookahead = 40,
+
+  -- Group the list into conversations.
+  --
+  -- A collapsed row stands for the whole thread and carries its newest message,
+  -- so replying or archiving from it behaves as expected. Expanding fetches the
+  -- thread's messages, which is why it happens on a key rather than up front.
+  --
+  --   "auto"  threads where reading is local, flat over IMAP
+  --   true    always threads (needs a local index; ignored otherwise)
+  --   false   one row per message
+  --
+  -- Only the local index can do this: himalaya's envelope list has no notion of
+  -- a thread, so an IMAP account stays flat whatever this says.
+  threads = "auto",
+
+  -- Glyphs for the thread column. ASCII by default on purpose: the obvious
+  -- alternatives (▸ ▾ ├ └) are East Asian Ambiguous, so they occupy one cell or
+  -- two depending on the terminal and 'ambiwidth', and the columns come apart
+  -- when the two disagree.
+  thread_glyphs = {
+    collapsed = ">",
+    expanded = "v",
+    child = "|-",
+    last_child = "`-",
+  },
+
+  -- Per-account settings, keyed by the account name in himalaya's config.
+  --
+  --   email      : your own address on that account. Needed to fill From, and
+  --                to drop yourself from a reply-all. himalaya's
+  --                `account list` does not report addresses, so it goes here
+  --   readonly   : refuse every operation that would modify mail
+  --   local_mail : read from the local notmuch index instead of over IMAP.
+  --                Writing still goes over IMAP, so the account keeps its
+  --                himalaya imap block. See the notmuch table further down
+  --   folders    : mailbox name -> the directory a sync tool actually made,
+  --                e.g. { inbox = "gmail/INBOX" }
+  --   queries    : mailbox name -> a notmuch query, for views that are not one
+  --                directory, e.g. { inbox = "tag:inbox" }
+  --   query_for  : function(mailbox) -> notmuch query, when the two tables
+  --                above are not enough
+  --
+  -- trash_mailbox, archive_mailbox and spam_mailbox may also be set here,
+  -- overriding the values further down for that account alone.
+  --
+  -- Empty by default. Anything named here is merged into what setup() is
+  -- given, so a shipped example would appear in every user's account list.
+  accounts = {},
+
+  -- Default reply behaviour: "all" or "sender". Whichever is not the
+  -- default remains available on its own key.
+  reply_mode = "all",
+
+  -- Where the mail-moving actions send a message.
+  --
+  -- himalaya v2 has no delete command, and its flag command does not accept
+  -- \Deleted either, so deleting means moving to the trash mailbox. Names go
+  -- through the account's [mailbox.alias] map in himalaya's own config, which
+  -- is why the short forms below work; anything unmatched is passed verbatim.
+  --
+  -- On Gmail a mailbox is a label: moving to all-mail takes the message out of
+  -- the inbox and nothing else, which is what archiving is there. Elsewhere
+  -- that mailbox is usually called "Archive". Set any of these per account.
+  trash_mailbox = "trash",
+  archive_mailbox = "all-mail",
+  spam_mailbox = "spam",
+
+  -- Whether to ask before moving a message to the trash.
+  -- Archiving and reporting spam do not ask: both are easy to undo by hand.
+  confirm_delete = true,
+
+  -- How long to wait for one himalaya command (milliseconds).
+  -- v2 renegotiates TCP+TLS+SASL every time, so a short limit fails healthy
+  -- calls. Filtering runs longer than listing, hence the headroom.
+  timeout = 60000,
+
+  -- Where to save attachments. nil defers to himalaya's downloads-dir.
+  download_dir = nil,
+
+  -- Draw images the message carries, in the message itself.
+  --
+  -- Only what is inside the message: an attachment, or a part the HTML refers
+  -- to by `cid:`. Remote images are never fetched, and that is deliberate — the
+  -- majority of images in bulk mail are one-pixel trackers whose only purpose
+  -- is to report that the message was opened.
+  --
+  -- Needs snacks.nvim and a terminal that speaks the kitty graphics protocol.
+  -- Without either, nothing is drawn and the attachment list reads as before.
+  inline_images = true,
+
+  -- How many lines an image may take. A banner would otherwise fill the window
+  -- and push the text it belongs to off the bottom.
+  inline_image_max_height = 12,
+
+  -- Reading from a local notmuch index instead of over IMAP.
+  --
+  -- An account opts in with `local_mail = true` in the accounts table above.
+  -- Everything that reads (list, body, attachments, search) then goes to
+  -- notmuch, which answers in tens of milliseconds; writing still goes over
+  -- IMAP through himalaya.
+  --
+  -- XAPIAN_CJK_NGRAM=1 is always passed. Japanese search needs it at query
+  -- time as well as when the index is built, and without it a word inside a
+  -- run of Japanese cannot be found at all.
+  notmuch = {
+    executable = "notmuch",
+    -- Path to a notmuch config. nil uses notmuch's own default.
+    config = nil,
+
+    -- How to turn a message that carries only HTML into something readable.
+    -- More than half the mail here is of that kind, and without this it
+    -- arrives as raw tags — which is also what himalaya did.
+    -- Set to nil to keep the markup as is.
+    html_renderer = { "w3m", "-dump", "-T", "text/html", "-cols", "100" },
+  },
+
+  -- Key bindings. Set one to false to leave that action unbound.
+  keymaps = {
+    -- The list buffer.
+    --
+    -- It is not modifiable, so single keys such as a and c are free to use —
+    -- the convention mutt and aerc follow. which-key only appears after
+    -- <leader>, so a hint line is kept on screen instead.
+    envelopes = {
+      read = "<cr>", -- open the message under the cursor
+      reply = "r", -- reply, per reply_mode
+      reply_other = "R", -- reply the other way (all <-> sender)
+      forward = "f", -- forward
+      compose = "c", -- write a new message
+      account = "a", -- pick an account
+      mailbox = "m", -- pick a mailbox
+      search = "/", -- filter
+      clear_search = "<esc>", -- clear the filter
+      -- Not g: that is a prefix, so binding it alone would break gg.
+      attachments = "A", -- save and open attachments
+      toggle_seen = "s", -- mark read or unread
+      toggle_flagged = "F", -- add or remove the flagged mark
+      trash = "d", -- move to the trash mailbox
+      archive = "e", -- move to the archive mailbox
+      spam = "S", -- move to the spam mailbox
+      move = "M", -- move to a mailbox you pick
+      refresh = "u", -- refetch
+      -- l and h do nothing useful in a list of fixed-width rows, so they open
+      -- and close the conversation instead. <Tab> toggles.
+      expand = "l",
+      collapse = "h",
+      toggle_thread = "<tab>",
+      help = "?", -- list the keys
+      next_page = "]", -- next page (paged lists only)
+      prev_page = "[", -- previous page (paged lists only)
+      close = "q",
+    },
+
+    -- The message buffer; also not modifiable, so single keys suffice.
+    message = {
+      reply = "r", -- reply, per reply_mode
+      reply_other = "R", -- reply the other way (all <-> sender)
+      forward = "f", -- forward
+      attachments = "A", -- save and open attachments (g would break gg)
+      toggle_headers = "h", -- toggle the folded headers
+      toggle_seen = "s", -- mark read or unread
+      toggle_flagged = "F", -- add or remove the flagged mark
+      trash = "d", -- move to the trash mailbox
+      archive = "e", -- move to the archive mailbox
+      spam = "S", -- move to the spam mailbox
+      move = "M", -- move to a mailbox you pick
+      toggle_wrap = "w", -- wrap long lines, or scroll sideways past a table
+      help = "?", -- list the keys
+      close = "q",
+      close_alt = "<esc>",
+    },
+
+    -- The compose buffer.
+    -- Prose is typed here, so single keys are not available.
+    compose = {
+      send = "<leader>hs", -- send (:w works too)
+      discard = "<leader>hq", -- discard
+    },
+  },
+
+  -- Whether to keep the available keys listed at the top of the screen.
+  --
+  -- Off: it costs two or three rows of every screen forever to teach something
+  -- learnt once, and pushes the mail down. The `help` key shows the same list
+  -- in a floating window when it is actually wanted.
+  show_hints = false,
+
+  -- Whether to name the columns above the list.
+  show_columns = true,
+
+  -- Keep the body of the row under the cursor on screen beside the list.
+  --
+  -- Only worth it when reading is local: following the cursor over IMAP would
+  -- mean a two-second fetch per row. From the index a body costs tens of
+  -- milliseconds, so it can simply be there.
+  --
+  --   "auto"    pick by the shape of the pane (below)
+  --   "below"   list on top, body underneath
+  --   "right"   list on the left, body on the right
+  --   true      the same as "auto"
+  --   false     never; <CR> opens the body as before
+  --
+  -- "auto" reads the pane rather than the terminal, so a tall split inside
+  -- herdr or tmux stacks while the same session full-screen sits side by side.
+  -- Side by side is preferred when there is width for two readable columns;
+  -- failing that, stacked if there is height for two readable halves; failing
+  -- both, no preview, because a split neither half can be read in helps nobody.
+  preview = "auto",
+
+  -- The thresholds "auto" decides on, in cells.
+  --
+  -- Width is the whole pane, so 160 means two columns of eighty — about the
+  -- narrowest a wrapped message reads well in. Height is the whole pane too.
+  preview_min_width = 160,
+  preview_min_height = 30,
+
+  -- How much of the pane the preview takes when the split is made.
+  preview_ratio = 0.5,
+
+  -- How long the cursor has to settle before the body is fetched, in
+  -- milliseconds. Scrolling through fifty rows should not fetch fifty bodies.
+  preview_delay = 90,
+
+  -- Column widths, in display cells. The subject takes whatever is left.
+  --
+  --   markers : unread / flagged / attachment, one cell each
+  --   date    : "MM-DD HH:MM" needs 11, "YYYY-MM-DD" needs 10
+  --   from    : a Japanese company name runs past 24 more often than not, so
+  --             widen this on a wide screen
+  --   thread  : the count on a collapsed conversation, "v123"
+  columns = {
+    markers = 3,
+    date = 11,
+    from = 24,
+    thread = 4,
+  },
+
+  -- Addresses to Bcc automatically, per account.
+  --
+  -- Useful where the sent folder is unavailable — quota-constrained servers,
+  -- or a workflow that already keeps copies elsewhere. The copy arrives in the
+  -- inbox like any other message.
+  -- e.g. { work = "you@work.example" }
+  auto_bcc = {},
+
+  -- How many envelopes to scan when filtering locally.
+  --
+  -- Non-ASCII queries cannot use the server search (a himalaya v2 limit), so
+  -- this many envelopes are fetched and matched here. 500 takes about three
+  -- seconds, barely more than 100: the connection dominates.
+  -- How many envelopes `is:suspicious` reads back to look at.
+  --
+  -- The suspicion mark is computed while drawing, not indexed, so there is no
+  -- query for it — the mailbox has to be read and examined. The header reports
+  -- how many were seen, so a capped answer does not read as a complete one.
+  suspicious_scan_limit = 5000,
+
+  search_limit = 500,
+
+  -- How many messages a server-side search may return.
+  --
+  -- `envelope search` collects matching UIDs and then fetches them one by one,
+  -- which turns pathological when many match (40 s for 500, against 3 s for
+  -- the same 500 through `envelope list`). Keep this small.
+  server_search_limit = 100,
+
+  -- Whether to persist the list across sessions.
+  -- With it on, a fresh Neovim shows the list without waiting.
+  -- Stored at stdpath("cache")/leterejo/envelopes.json.
+  persist_cache = true,
+
+  -- Whether to fold headers down to the interesting ones when opening a body.
+  -- Dozens of Received: lines otherwise push the body off the screen.
+  fold_headers = true,
+
+  -- Whether to wrap long lines in the body.
+  --
+  --   "auto"  wrap, unless the body looks laid out in columns
+  --   true    always wrap
+  --   false   never wrap; scroll sideways
+  --
+  -- w3m honours the width it is given for prose but not for a table, so a wide
+  -- one comes back two or three times the window and wrapping destroys it.
+  -- "auto" tells a table from a long URL by the runs of two spaces that pad a
+  -- table into columns. The `toggle_wrap` key overrides it per message.
+  message_wrap = "auto",
+
+  -- Headers kept visible when folding. Lower case.
+  visible_headers = {
+    "from",
+    "to",
+    "cc",
+    "bcc",
+    "reply-to",
+    "subject",
+    "date",
+  },
+
+  -- How to open attachments, listed per MIME type.
+  --
+  -- Two or more handlers prompt for a pick; a single one runs directly. An
+  -- unmatched type falls back to the major type ("image/*"), then to "*".
+  --
+  -- A handler may set:
+  --   label     : name shown when picking
+  --   cmd       : command to run; the saved path is appended
+  --   mode      : how to launch it (below)
+  --   direction : "right" | "down"  split direction (herdr / tmux)
+  --   ratio     : split size (herdr / tmux)
+  --   focus     : whether to follow the new pane (herdr / tmux); off by default
+  --   run       : function(path, info) — for anything the above cannot express
+  --
+  -- mode is one of:
+  --   "save"       save only; launch nothing
+  --   "herdr"      run in a new herdr pane
+  --   "tmux"       run in a new tmux pane
+  --   "terminal"   run in a terminal window inside Neovim
+  --   "fullscreen" hand the screen over and wait for it to exit
+  --   "detach"     launch in the background (for tools opening their own window)
+  --
+  -- Note: tools relying on kitty's graphics protocol (some image viewers among them)
+  -- cannot display inside Neovim, which owns the alternate screen and redraws
+  -- over them. Send those to an outside pane with "herdr" or "tmux".
+  -- Saving is the only thing that can be assumed to work everywhere, so it is
+  -- the whole default. A worked example with a viewer is in the README.
+  attachment_handlers = {
+    ["*"] = { { label = "Just save", mode = "save" } },
+  },
+}
+
+M.options = vim.deepcopy(M.defaults)
+
+function M.setup(opts)
+  M.options = vim.tbl_deep_extend("force", vim.deepcopy(M.defaults), opts or {})
+  return M.options
+end
+
+-- A setting for one account, falling back to the plugin-wide value.
+--
+-- Mailbox names differ per account — Gmail renames its special folders with
+-- the display language — so the moving actions have to ask per account rather
+-- than read the top-level value directly.
+function M.account_option(account, name)
+  local a = account and M.options.accounts[account] or nil
+  if a and a[name] ~= nil then
+    return a[name]
+  end
+  return M.options[name]
+end
+
+-- Whether the given account is read-only.
+function M.is_readonly(account)
+  if not account then
+    return false
+  end
+  local a = M.options.accounts[account]
+  return a ~= nil and a.readonly == true
+end
+
+return M

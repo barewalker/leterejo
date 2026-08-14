@@ -1,0 +1,1166 @@
+-- The envelope list buffer.
+--
+-- One row per message, or per conversation where the account can group them.
+-- Row numbers map back to envelopes so actions can target whatever sits under
+-- the cursor.
+--
+-- The list grows as the cursor nears its end rather than breaking into pages.
+-- Paging only ever existed because a fetch over IMAP costs seconds; reading
+-- from a local index costs tens of milliseconds, so there is nothing left to
+-- ration. Accounts still read over IMAP keep the pages.
+local cache = require("leterejo.cache")
+local cli = require("leterejo.cli")
+local config = require("leterejo.config")
+local hl = require("leterejo.ui.highlight")
+local lang = require("leterejo.lang")
+local state = require("leterejo.state")
+local util = require("leterejo.ui.util")
+
+local M = {}
+
+local BUFNAME = "leterejo://envelopes"
+
+-- Column widths in display cells; the subject takes whatever remains.
+-- The marker column holds three: state, flagged, attachment.
+local DEFAULT_WIDTHS = { markers = 3, date = 11, from = 24, thread = 4 }
+
+local function W(name)
+  return (config.options.columns or {})[name] or DEFAULT_WIDTHS[name]
+end
+
+local function find_buf()
+  for _, b in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_valid(b) and vim.api.nvim_buf_get_name(b) == BUFNAME then
+      return b
+    end
+  end
+  return nil
+end
+
+-- Modes ---------------------------------------------------------------------
+
+-- Whether the list is grouped into conversations.
+--
+-- Filtering is always flat: a search result is a set of messages that matched,
+-- and folding them into conversations would hide the very rows the user asked
+-- for behind a collapsed parent.
+local function threaded()
+  if state.query or config.options.threads == false then
+    return false
+  end
+  return cli.can_thread(state.account)
+end
+
+-- Whether the list grows on scroll instead of paging.
+--
+-- A filtered list follows the same rule, but asks the search whether its result
+-- can be read a batch at a time: a server-side search returns one fixed batch
+-- and cannot be resumed at an offset.
+local function continuous()
+  if state.query then
+    return require("leterejo.search").can_page(state.account, state.query.text)
+  end
+
+  local mode = config.options.continuous
+  if mode == true or mode == false then
+    return mode
+  end
+  return cli.can_thread(state.account)
+end
+
+-- Where the body of the row under the cursor is kept on screen, if anywhere.
+--
+-- Returns "below", "right", or nil for no preview.
+--
+-- Following the cursor over IMAP would mean a two-second fetch per row, so this
+-- is for local reading only.
+--
+-- "auto" measures the pane rather than the terminal. Inside herdr or tmux the
+-- editor occupies whatever the pane gives it, and that is what decides whether
+-- two columns fit — the same session is a tall strip in one pane and a wide
+-- board in another. Side by side wins where there is width for two readable
+-- columns; otherwise stacked, if there is height for two readable halves;
+-- otherwise nothing, because a split neither half can be read in helps nobody.
+local function preview_where()
+  local mode = config.options.preview
+  if mode == false then
+    return nil
+  end
+  if not cli.can_thread(state.account) then
+    return nil -- the same test as "reads from the local index"
+  end
+  if mode == "below" or mode == "right" then
+    return mode
+  end
+
+  if vim.o.columns >= (config.options.preview_min_width or 160) then
+    return "right"
+  end
+  if vim.o.lines >= (config.options.preview_min_height or 30) then
+    return "below"
+  end
+  return nil
+end
+
+local function previewing()
+  return preview_where() ~= nil
+end
+
+-- Layout --------------------------------------------------------------------
+
+local function thread_width()
+  return threaded() and W("thread") or 0
+end
+
+-- Width of the window showing the list.
+--
+-- The current window is not it when an operation is triggered from the body
+-- buffer, and measuring that one would lay the columns out for the wrong width.
+local function width_of(buf)
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_is_valid(w) and vim.api.nvim_win_get_buf(w) == buf then
+      return vim.api.nvim_win_get_width(w)
+    end
+  end
+  return vim.api.nvim_win_get_width(0)
+end
+
+local function subject_width(buf)
+  local fixed = W("markers") + W("date") + W("from") + thread_width()
+  -- One space between each column, and one after the last.
+  local gaps = thread_width() > 0 and 5 or 4
+  return math.max(20, width_of(buf) - fixed - gaps)
+end
+
+-- How many lines the key hints took last time they were drawn. They wrap on a
+-- narrow window, so the offset from a cursor row to an envelope is not fixed.
+local hint_height = 1
+
+-- Rows preceding the list; needed to map a cursor row to an envelope.
+local function header_height()
+  local n = 1
+  if config.options.show_hints then
+    n = n + hint_height
+  end
+  if config.options.show_columns then
+    n = n + 1
+  end
+  return n
+end
+
+-- Drawing -------------------------------------------------------------------
+
+-- Where we are, how much of it is on screen, and whether anything can be
+-- changed. Assembled piece by piece rather than from one format string so each
+-- part can carry its own colour.
+local function render_header()
+  local b = hl.line()
+
+  b.add(state.account_label() .. " / " .. tostring(state.mailbox), "LeterejoHeader")
+  b.add("  ")
+
+  if state.query then
+    b.add(lang.t("filtered_by", state.query.text), "LeterejoHeaderQuery")
+    b.add("  ")
+  end
+
+  if state.envelopes == nil then
+    b.add(lang.t("loading"), "LeterejoHeaderNote")
+  elseif state.total then
+    local key = threaded() and "count_threads" or "count_of"
+    b.add(
+      lang.t(key, util.group_digits(state.loaded), util.group_digits(state.total)),
+      "LeterejoHeaderCount"
+    )
+  else
+    b.add(lang.t("count", #state.envelopes), "LeterejoHeaderCount")
+  end
+
+  -- While filtering, state the reach as well as the query. A local filter only
+  -- saw a recent slice, and hiding that invites misreading the result.
+  if state.query then
+    local scope
+    if state.query.index then
+      -- notmuch covers every indexed message, so there is no slice to warn about.
+      scope = lang.t("scope_index")
+    elseif state.query.server then
+      scope = lang.t("scope_server")
+    else
+      scope = lang.t("scope_local", state.query.scanned or 0)
+    end
+    b.add("  (" .. scope .. ")", "LeterejoHeaderNote")
+    b.add("   ")
+    b.add(
+      lang.t(
+        "search_hint",
+        require("leterejo.keymaps").label("envelopes", "search"),
+        require("leterejo.keymaps").label("envelopes", "clear_search")
+      ),
+      "LeterejoHeaderNote"
+    )
+  elseif not continuous() then
+    b.add("  (" .. lang.t("page", state.page) .. ")", "LeterejoHeaderNote")
+  end
+
+  if state.is_readonly() then
+    b.add(lang.t("readonly"), "LeterejoHeaderNote")
+  end
+
+  return b.build()
+end
+
+local function render_columns(width)
+  local b = hl.line()
+  b.add(string.rep(" ", W("markers") + 1), "LeterejoColumns")
+  b.add(util.fit(lang.t("col_date"), W("date")) .. " ", "LeterejoColumns")
+  b.add(util.fit(lang.t("col_from"), W("from")) .. " ", "LeterejoColumns")
+  if thread_width() > 0 then
+    b.add(string.rep(" ", thread_width()) .. " ", "LeterejoColumns")
+  end
+  -- Not padded: trailing blanks on the last column serve nothing and show up
+  -- when the line is yanked.
+  b.add(util.truncate(lang.t("col_subject"), width), "LeterejoColumns")
+  return b.build()
+end
+
+-- The thread column: a count on a parent, a guide on a child, blank otherwise.
+local function add_thread_cell(b, e)
+  if thread_width() == 0 then
+    return
+  end
+
+  local glyphs = config.options.thread_glyphs or {}
+
+  if e.depth then
+    local guide = e.last_child and (glyphs.last_child or "`-") or (glyphs.child or "|-")
+    b.add(util.fit(guide, W("thread")) .. " ", "LeterejoTree")
+  elseif (e.thread_total or 1) > 1 then
+    local mark = e.expanded and (glyphs.expanded or "v") or (glyphs.collapsed or ">")
+    b.add(util.fit(mark .. tostring(e.thread_total), W("thread")) .. " ", "LeterejoThreadMark")
+  else
+    b.add(string.rep(" ", W("thread")) .. " ")
+  end
+end
+
+local function render_row(e, width)
+  local b = hl.line()
+
+  -- Strip invisible characters from the sender and subject.
+  --
+  -- A direction control means the name on screen is not the string in the
+  -- header, which outranks whether the message has been read. Zero-width
+  -- padding is not shown here at all: it is ordinary in bulk mail, and a marker
+  -- that fires on a third of the inbox says nothing. `is:obfuscated` finds it.
+  local from, bidi_a = util.strip_invisible(util.address_label(e.from))
+  local subject, bidi_b = util.strip_invisible(e.subject or lang.t("no_subject"))
+  local unread = util.is_unseen(e)
+
+  if bidi_a + bidi_b > 0 then
+    b.add("!", "LeterejoSuspectMark")
+  elseif unread then
+    b.add("*", "LeterejoUnreadMark")
+  else
+    b.add(" ")
+  end
+
+  -- The flagged mark, a star in most other clients. Kept in its own column so
+  -- it does not compete with the unread and impersonation markers.
+  if util.has_flag(e, "flagged") then
+    b.add("+", "LeterejoFlaggedMark")
+  else
+    b.add(" ")
+  end
+
+  if e["has-attachment"] == true then
+    b.add("@", "LeterejoAttachMark")
+  else
+    b.add(" ")
+  end
+  b.add(" ")
+
+  b.add(util.fit(util.format_date(e.date), W("date")) .. " ", "LeterejoDate")
+  b.add(util.fit(from, W("from")) .. " ", "LeterejoFrom")
+  add_thread_cell(b, e)
+  b.add(util.truncate(subject, width), unread and "LeterejoSubjectUnread" or "LeterejoSubject")
+
+  return b.build()
+end
+
+local function redraw(buf)
+  -- A fetch can outlive the list: closing it in the meantime is ordinary rather
+  -- than exceptional, and the callback then arrives holding a buffer that no
+  -- longer exists.
+  if not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
+
+  local width = subject_width(buf)
+  local lines, marks = {}, {}
+
+  local function push(line, m)
+    table.insert(lines, line)
+    if m and #m > 0 then
+      marks[#lines] = m
+    end
+  end
+
+  push(render_header())
+
+  if config.options.show_hints then
+    local hints = require("leterejo.keymaps").hint_lines("envelopes", M.HINTS, width_of(buf) - 2)
+    hint_height = #hints
+    for _, h in ipairs(hints) do
+      push(h, { { 0, #h, "LeterejoHeaderNote" } })
+    end
+  end
+
+  if config.options.show_columns then
+    push(render_columns(width))
+  end
+
+  for _, e in ipairs(state.envelopes or {}) do
+    push(render_row(e, width))
+  end
+
+  -- Distinguish "not fetched yet" from "fetched and empty", and say when the
+  -- list is still growing so a short list does not read as the whole mailbox.
+  if state.envelopes == nil then
+    push("  " .. lang.t("loading"), { { 0, 64, "LeterejoEmpty" } })
+  elseif #state.envelopes == 0 then
+    push(lang.t("empty"), { { 0, 64, "LeterejoEmpty" } })
+  elseif continuous() then
+    if state.loading then
+      push(lang.t("loading_more"), { { 0, 64, "LeterejoMore" } })
+    elseif state.total and state.loaded >= state.total then
+      push(lang.t("end_of_list"), { { 0, 64, "LeterejoMore" } })
+    end
+  end
+
+  -- A buffer line cannot contain a newline, and one arriving from anywhere — a
+  -- mailbox name, a filter string, a header we failed to clean — aborts the
+  -- redraw and leaves the list unusable. Cheap enough to guarantee here.
+  for i, line in ipairs(lines) do
+    if line:find("[\r\n]") then
+      lines[i] = line:gsub("[\r\n]", " ")
+    end
+  end
+
+  vim.bo[buf].modifiable = true
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].modified = false
+
+  hl.paint(buf, marks)
+end
+
+-- Redraw without moving the cursor, for rows appended underneath it.
+local function redraw_in_place(buf)
+  local win = vim.api.nvim_get_current_win()
+  local keep = vim.api.nvim_win_is_valid(win)
+    and vim.api.nvim_win_get_buf(win) == buf
+    and vim.api.nvim_win_get_cursor(win)
+    or nil
+
+  redraw(buf)
+
+  if keep and vim.api.nvim_buf_is_valid(buf) and vim.api.nvim_win_is_valid(win) then
+    local last = vim.api.nvim_buf_line_count(buf)
+    pcall(vim.api.nvim_win_set_cursor, win, { math.min(keep[1], last), keep[2] })
+  end
+end
+
+-- The window showing the list, whichever window is current.
+--
+-- The preview fires from a timer, by which point the cursor may be anywhere,
+-- and reading window zero would then measure the wrong one.
+local function list_win(buf)
+  for _, w in ipairs(vim.api.nvim_list_wins()) do
+    if vim.api.nvim_win_is_valid(w) and vim.api.nvim_win_get_buf(w) == buf then
+      return w
+    end
+  end
+  return nil
+end
+
+-- The envelope under the cursor, offset by the header rows.
+local function envelope_under_cursor()
+  local list = state.envelopes or {}
+  local buf = find_buf()
+  local win = buf and list_win(buf) or nil
+  if not win then
+    return nil
+  end
+
+  local index = vim.api.nvim_win_get_cursor(win)[1] - header_height()
+  if index < 1 or index > #list then
+    return nil
+  end
+  return list[index]
+end
+
+-- Put the cursor on a message rather than on the heading.
+--
+-- A fresh buffer starts at line one, which is the header, so nothing is under
+-- the cursor until the user presses j — and the preview has nothing to show.
+local function place_cursor(buf)
+  local win = list_win(buf)
+  if not win or #(state.envelopes or {}) == 0 then
+    return
+  end
+
+  local row = vim.api.nvim_win_get_cursor(win)[1]
+  local first = header_height() + 1
+  if row < first then
+    pcall(vim.api.nvim_win_set_cursor, win, { first, 0 })
+  end
+end
+
+-- Building the drawn list ----------------------------------------------------
+
+-- Flatten the conversations held into the rows to draw.
+--
+-- Only called when the set of conversations or which are open changes. In
+-- between, the operations edit `state.envelopes` directly so that a message
+-- just trashed leaves the screen without another fetch.
+local function rebuild()
+  if not state.threads then
+    return
+  end
+
+  local out = {}
+  for _, t in ipairs(state.threads) do
+    t.expanded = state.expanded[t.thread] ~= nil
+    t.depth = nil
+    table.insert(out, t)
+
+    local kids = state.expanded[t.thread]
+    if kids then
+      for i, k in ipairs(kids) do
+        k.depth = 1
+        k.thread = t.thread
+        k.last_child = i == #kids
+        table.insert(out, k)
+      end
+    end
+  end
+
+  state.envelopes = out
+end
+
+-- Fetching -------------------------------------------------------------------
+
+local function fetch_batch(account, mailbox, offset, limit, on_done)
+  if state.query then
+    return require("leterejo.search").run(
+      account,
+      mailbox,
+      state.query.text,
+      offset,
+      limit,
+      function(ok, res)
+        on_done(ok, res)
+      end
+    )
+  end
+  if threaded() then
+    return cli.list_threads(account, mailbox, offset, limit, on_done)
+  end
+  return cli.list_envelopes_at(account, mailbox, offset, limit, on_done)
+end
+
+-- Ask for the next batch. Guarded so a burst of cursor movement cannot start
+-- several fetches for the same rows.
+local function load_more(buf)
+  if state.loading or not continuous() then
+    return
+  end
+  if state.total and state.loaded >= state.total then
+    return
+  end
+
+  local account, mailbox = state.account, state.mailbox
+  local text = state.query and state.query.text
+  state.loading = true
+
+  fetch_batch(account, mailbox, state.loaded, config.options.chunk_size, function(ok, rows)
+    state.loading = false
+
+    -- Discard if we moved elsewhere, or the filter changed, while fetching.
+    if state.account ~= account or state.mailbox ~= mailbox then
+      return
+    end
+    if text ~= (state.query and state.query.text) then
+      return
+    end
+
+    if not ok then
+      return vim.notify(lang.t("prefix") .. tostring(rows), vim.log.levels.ERROR)
+    end
+
+    if #rows == 0 then
+      -- A short batch is the end, whatever the count said.
+      state.total = state.loaded
+      return redraw_in_place(buf)
+    end
+
+    state.loaded = state.loaded + #rows
+
+    if threaded() then
+      vim.list_extend(state.threads or {}, rows)
+      rebuild()
+    else
+      vim.list_extend(state.envelopes or {}, rows)
+    end
+
+    redraw_in_place(buf)
+  end)
+end
+
+-- Start a continuous list from nothing.
+local function load_first(buf)
+  local account, mailbox = state.account, state.mailbox
+
+  state.reset_list()
+  if threaded() then
+    state.threads = {}
+  else
+    state.envelopes = nil
+  end
+  redraw(buf)
+
+  -- The total arrives on its own; it is only needed for the heading, so the
+  -- rows are not held up waiting for it.
+  --
+  -- A filter started while this was out would otherwise be labelled with the
+  -- whole mailbox's total: the count is slow enough (a second, on a large
+  -- mailbox) for that to be an ordinary sequence of keystrokes, not a race.
+  cli.count_envelopes(account, mailbox, threaded(), function(ok, total)
+    if ok and state.account == account and state.mailbox == mailbox and not state.query then
+      state.total = total
+      redraw_in_place(buf)
+    end
+  end)
+
+  state.loading = true
+  fetch_batch(account, mailbox, 0, config.options.chunk_size, function(ok, rows)
+    state.loading = false
+
+    if state.account ~= account or state.mailbox ~= mailbox then
+      return
+    end
+
+    if not ok then
+      state.envelopes = {}
+      redraw(buf)
+      return vim.notify(lang.t("prefix") .. tostring(rows), vim.log.levels.ERROR)
+    end
+
+    state.loaded = #rows
+    if threaded() then
+      state.threads = rows
+      rebuild()
+    else
+      state.envelopes = rows
+    end
+    redraw(buf)
+
+    -- A tall window can show more rows than one batch holds, and the cursor may
+    -- never move far enough to ask for the rest.
+    if #rows > 0 and #(state.envelopes or {}) < vim.api.nvim_win_get_height(0) then
+      load_more(buf)
+    end
+
+    -- Nothing has moved the cursor, so the preview has had no reason to fire.
+    place_cursor(buf)
+    M.preview()
+  end)
+end
+
+-- One page, the old way, for accounts that read over IMAP.
+local function load_page(buf)
+  local account, mailbox, page = state.account, state.mailbox, state.page
+
+  local page_size = config.options.page_size
+  if not page_size then
+    -- Fetch what fits the window, minus the header rows.
+    page_size = math.max(5, vim.api.nvim_win_get_height(0) - header_height() - 1)
+  end
+
+  local cached = cache.get_envelopes(account, mailbox, page)
+  state.envelopes = cached or nil
+  redraw(buf)
+
+  cli.list_envelopes(account, mailbox, page, page_size, function(ok, res)
+    if not ok then
+      -- With remembered contents on screen, just report and keep them.
+      return vim.notify(lang.t("prefix") .. res, vim.log.levels.ERROR)
+    end
+
+    cache.set_envelopes(account, mailbox, page, res)
+
+    if state.account ~= account or state.mailbox ~= mailbox or state.page ~= page then
+      return
+    end
+    if cached and not cache.envelopes_differ(cached, res) then
+      return
+    end
+
+    state.envelopes = res
+    redraw_in_place(buf)
+  end)
+end
+
+local function load_search(buf)
+  local account, mailbox, text = state.account, state.mailbox, state.query.text
+  local search = require("leterejo.search")
+
+  local query = state.query
+  state.reset_list()
+  state.query = query
+  redraw(buf)
+
+  vim.notify(lang.t("searching", text), vim.log.levels.INFO)
+
+  -- Same as the plain list: the total is only for the heading, so the rows do
+  -- not wait for it. Without it a truncated result reads as the whole answer.
+  search.count(account, mailbox, text, function(ok, total)
+    if ok and state.query and state.query.text == text then
+      state.total = total
+      redraw_in_place(buf)
+    end
+  end)
+
+  state.loading = true
+  search.run(account, mailbox, text, 0, config.options.chunk_size, function(ok, res, info)
+    state.loading = false
+
+    if not ok then
+      state.envelopes = {}
+      redraw(buf)
+      return vim.notify(lang.t("prefix") .. tostring(res), vim.log.levels.ERROR)
+    end
+
+    -- Discard if the filter was cleared or changed while waiting.
+    if not state.query or state.query.text ~= text then
+      return
+    end
+    if state.account ~= account or state.mailbox ~= mailbox then
+      return
+    end
+
+    state.query.index = info and info.index
+    state.query.server = info and info.server
+    state.query.scanned = info and info.scanned
+    state.envelopes = res
+    state.loaded = #res
+    redraw(buf)
+  end)
+end
+
+-- Redraw from what is already held, without fetching anything.
+--
+-- Used after an operation that changed a message: a refetch over IMAP spends
+-- seconds, so the row is corrected in place and the screen answers at once.
+function M.redraw()
+  local buf = find_buf()
+  if buf then
+    redraw(buf)
+  end
+end
+
+-- Refetch and redraw the list.
+function M.refresh()
+  local buf = find_buf()
+  if not buf then
+    return
+  end
+
+  if state.query then
+    return load_search(buf)
+  end
+  if continuous() then
+    return load_first(buf)
+  end
+  return load_page(buf)
+end
+
+-- The preview ------------------------------------------------------------------
+
+local preview_timer = nil
+
+-- Show the row under the cursor below the list, without leaving the list.
+--
+-- Debounced: running down fifty rows should not fetch fifty bodies. Each
+-- request carries a token so a slow one for a row already passed cannot land on
+-- top of the row now under the cursor.
+local function preview_now()
+  if not previewing() then
+    return
+  end
+
+  local e = envelope_under_cursor()
+  if not e then
+    return
+  end
+  if state.preview_id == e.id and require("leterejo.ui.message").find_win() then
+    return -- already showing it
+  end
+
+  state.preview_token = state.preview_token + 1
+  state.preview_id = e.id
+
+  require("leterejo.ui.message").open(e, {
+    focus = false,
+    quiet = true,
+    token = state.preview_token,
+    where = preview_where(),
+    ratio = config.options.preview_ratio,
+  })
+end
+
+local function preview_soon()
+  if not previewing() then
+    return
+  end
+  if preview_timer then
+    preview_timer:stop()
+  end
+  preview_timer = vim.defer_fn(preview_now, config.options.preview_delay or 90)
+end
+
+-- Refresh the preview from somewhere the cursor has not moved — a list that has
+-- just been drawn, or a mailbox that has just been switched.
+M.preview = preview_soon
+
+-- Resizing -----------------------------------------------------------------
+
+-- Which way the preview is arranged at the moment, or nil if there is none.
+local function preview_arrangement(buf)
+  local win = require("leterejo.ui.message").find_win()
+  if not win then
+    return nil
+  end
+  local list = list_win(buf)
+  if not list then
+    return nil
+  end
+
+  local lp = vim.api.nvim_win_get_position(list)
+  local mp = vim.api.nvim_win_get_position(win)
+  return mp[1] > lp[1] and "below" or "right"
+end
+
+local resize_timer = nil
+
+-- Lay everything out again for a pane that changed shape.
+--
+-- Three things go stale at once, and all three are visible. The columns were
+-- measured against the old width, so the subject is cut short on a pane that
+-- just got wider. "auto" chose stacked or side by side for a shape the pane no
+-- longer has. And the body was rendered by w3m to fit a window of another size,
+-- which matters most for a table, since w3m lays those out to the width it was
+-- given and nothing rewraps them afterwards.
+local function relayout()
+  local buf = find_buf()
+  if not buf or not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
+
+  redraw(buf)
+
+  -- Leave a body the reader opened deliberately alone. Only the preview, which
+  -- put itself there, may be moved or taken away.
+  if state.preview_id == nil then
+    return
+  end
+
+  local message = require("leterejo.ui.message")
+  local want, have = preview_where(), preview_arrangement(buf)
+
+  if have and want ~= have then
+    local win = message.find_win()
+    if win and #vim.api.nvim_list_wins() > 1 then
+      vim.api.nvim_win_close(win, true)
+    end
+    state.preview_id = nil
+  end
+
+  if not want then
+    -- The pane is too small for two halves now.
+    local win = message.find_win()
+    if win and #vim.api.nvim_list_wins() > 1 then
+      vim.api.nvim_win_close(win, true)
+    end
+    state.preview_id = nil
+    return
+  end
+
+  -- Draw the body again at the width it now has.
+  state.preview_id = nil
+  M.preview()
+end
+
+local function relayout_soon()
+  if resize_timer then
+    resize_timer:stop()
+  end
+  resize_timer = vim.defer_fn(relayout, 120)
+end
+
+-- Conversations ---------------------------------------------------------------
+
+-- The thread row the cursor is on or inside.
+local function thread_at_cursor()
+  local e = envelope_under_cursor()
+  if not e or not e.thread then
+    return nil
+  end
+  return e
+end
+
+local function collapse_thread()
+  local buf = find_buf()
+  if not buf or not threaded() then
+    return
+  end
+
+  local e = thread_at_cursor()
+  if not e or not state.expanded[e.thread] then
+    return
+  end
+
+  -- Closing from a child would leave the cursor pointing at a row that is about
+  -- to disappear, so put it on the parent first.
+  local parent_row
+  for i, row in ipairs(state.envelopes or {}) do
+    if row.thread == e.thread and not row.depth then
+      parent_row = i
+      break
+    end
+  end
+
+  state.expanded[e.thread] = nil
+  rebuild()
+  redraw(buf)
+
+  if parent_row then
+    local win = vim.api.nvim_get_current_win()
+    if vim.api.nvim_win_get_buf(win) == buf then
+      pcall(vim.api.nvim_win_set_cursor, win, { parent_row + header_height(), 0 })
+    end
+  end
+end
+
+local function expand_thread()
+  local buf = find_buf()
+  if not buf then
+    return
+  end
+  if not threaded() then
+    return vim.notify(lang.t("no_threads_here"), vim.log.levels.INFO)
+  end
+
+  local e = thread_at_cursor()
+  if not e or state.expanded[e.thread] then
+    return
+  end
+
+  if (e.thread_total or 1) <= 1 then
+    return vim.notify(lang.t("thread_single"), vim.log.levels.INFO)
+  end
+
+  local account, thread = state.account, e.thread
+  vim.notify(lang.t("thread_loading"), vim.log.levels.INFO)
+
+  cli.thread_messages(account, thread, function(ok, msgs)
+    if not ok then
+      return vim.notify(lang.t("prefix") .. tostring(msgs), vim.log.levels.ERROR)
+    end
+    if state.account ~= account or not state.threads then
+      return
+    end
+
+    state.expanded[thread] = msgs
+    rebuild()
+    redraw_in_place(buf)
+  end)
+end
+
+-- Open or close the conversation under the cursor, whichever it is not.
+local function toggle_thread()
+  local e = thread_at_cursor()
+  if e and state.expanded[e.thread] then
+    return collapse_thread()
+  end
+  return expand_thread()
+end
+
+-- Keys ------------------------------------------------------------------------
+
+local function setup_keymaps(buf)
+  -- Attachments are reachable from the list too, without opening the body. The
+  -- attachment list is not known here, so ask for just the structure — cheaper
+  -- than downloading the message.
+  local function attachments()
+    local e = envelope_under_cursor()
+    if not e then
+      return
+    end
+
+    if e["has-attachment"] == false then
+      return vim.notify(lang.e("no_attachments"), vim.log.levels.INFO)
+    end
+
+    local account, mailbox, id = state.account, state.mailbox, e.id
+    vim.notify(lang.t("checking_attachments"), vim.log.levels.INFO)
+
+    cli.list_attachments(account, mailbox, id, function(ok, atts)
+      if not ok then
+        return vim.notify(lang.t("prefix") .. tostring(atts), vim.log.levels.ERROR)
+      end
+
+      require("leterejo.attachments").download_and_open(account, mailbox, id, atts or {})
+    end)
+  end
+
+  -- Filtering. Non-ASCII cannot use the server search, so recent envelopes are
+  -- matched locally; the header says which path was taken.
+  local function search()
+    vim.ui.input({
+      prompt = lang.t("search_prompt"),
+      default = state.query and state.query.text or "",
+    }, function(input)
+      if input == nil then
+        return -- cancelled
+      end
+
+      input = vim.trim(input)
+      state.query = input ~= "" and { text = input } or nil
+      state.reset_page()
+      M.refresh()
+    end)
+  end
+
+  -- An action on the row under the cursor.
+  local function on_row(fn)
+    return function()
+      local e = envelope_under_cursor()
+      if e then
+        fn(e)
+      end
+    end
+  end
+
+  local function act(name)
+    return function()
+      require("leterejo.actions")[name](envelope_under_cursor())
+    end
+  end
+
+  require("leterejo.keymaps").apply(buf, "envelopes", {
+    read = {
+      desc = lang.t("desc_read"),
+      handler = on_row(function(e)
+        -- With the preview already showing it, <CR> means "let me work in it"
+        -- rather than "fetch it". Stepping into the window is the whole action.
+        local message = require("leterejo.ui.message")
+        if previewing() and state.preview_id == e.id and message.find_win() then
+          return vim.api.nvim_set_current_win(message.find_win())
+        end
+        message.open(e, { where = preview_where(), ratio = config.options.preview_ratio })
+      end),
+    },
+    expand = { desc = lang.t("desc_expand"), handler = expand_thread },
+    collapse = { desc = lang.t("desc_collapse"), handler = collapse_thread },
+    toggle_thread = { desc = lang.t("desc_toggle_thread"), handler = toggle_thread },
+    help = {
+      desc = lang.t("desc_help"),
+      handler = function()
+        require("leterejo.ui.help").open("envelopes")
+      end,
+    },
+    next_page = {
+      desc = lang.t("desc_next_page"),
+      handler = function()
+        if continuous() then
+          return
+        end
+        state.page = state.page + 1
+        M.refresh()
+      end,
+    },
+    prev_page = {
+      desc = lang.t("desc_prev_page"),
+      handler = function()
+        if continuous() or state.page <= 1 then
+          return
+        end
+        state.page = state.page - 1
+        M.refresh()
+      end,
+    },
+    attachments = { desc = lang.t("desc_attachments"), handler = attachments },
+    toggle_seen = { desc = lang.t("desc_toggle_seen"), handler = act("toggle_seen") },
+    toggle_flagged = { desc = lang.t("desc_toggle_flagged"), handler = act("toggle_flagged") },
+    trash = { desc = lang.t("desc_trash"), handler = act("trash") },
+    archive = { desc = lang.t("desc_archive"), handler = act("archive") },
+    spam = { desc = lang.t("desc_spam"), handler = act("spam") },
+    move = { desc = lang.t("desc_move"), handler = act("move") },
+    mailbox = {
+      desc = lang.t("desc_mailbox"),
+      handler = function()
+        require("leterejo.pickers").pick_mailbox()
+      end,
+    },
+    account = {
+      desc = lang.t("desc_account"),
+      handler = function()
+        require("leterejo.pickers").pick_account()
+      end,
+    },
+    search = { desc = lang.t("desc_search"), handler = search },
+    clear_search = {
+      desc = lang.t("desc_clear_search"),
+      handler = function()
+        if state.query then
+          state.query = nil
+          state.reset_page()
+          M.refresh()
+        end
+      end,
+    },
+    refresh = {
+      desc = lang.t("desc_refresh"),
+      handler = function()
+        cache.clear()
+        state.reset_page()
+        M.refresh()
+      end,
+    },
+    compose = {
+      desc = lang.t("desc_compose"),
+      handler = function()
+        require("leterejo.compose").compose()
+      end,
+    },
+    reply = {
+      desc = lang.t("desc_reply"),
+      handler = on_row(function(e)
+        require("leterejo.compose").reply(e)
+      end),
+    },
+    reply_other = {
+      desc = lang.t("desc_reply_other"),
+      handler = on_row(function(e)
+        require("leterejo.compose").reply_other(e)
+      end),
+    },
+    forward = {
+      desc = lang.t("desc_forward"),
+      handler = on_row(function(e)
+        require("leterejo.compose").forward(e)
+      end),
+    },
+    close = {
+      desc = lang.t("desc_close"),
+      handler = function()
+        vim.api.nvim_buf_delete(buf, { force = true })
+      end,
+    },
+  })
+end
+
+-- Keys still listed at the top for anyone who turns show_hints back on.
+-- Ordered by how often they are wanted: a narrow window drops from the end.
+M.HINTS = {
+  { "read", "hint_read" },
+  { "reply", "hint_reply" },
+  { "forward", "hint_forward" },
+  { "compose", "hint_compose" },
+  { "toggle_seen", "hint_seen" },
+  { "trash", "hint_trash" },
+  { "archive", "hint_archive" },
+  { "search", "hint_search" },
+  { "mailbox", "hint_mailbox" },
+  { "account", "hint_account" },
+  { "attachments", "hint_attachments" },
+  { "refresh", "hint_refresh" },
+  { "close", "hint_close" },
+  { "move", "hint_move" },
+  { "toggle_flagged", "hint_flagged" },
+  { "spam", "hint_spam" },
+}
+
+-- Ask for more rows once the cursor comes within reach of the end.
+local function watch_cursor(buf)
+  local group = vim.api.nvim_create_augroup("LeterejoCursor", { clear = true })
+
+  vim.api.nvim_create_autocmd("CursorMoved", {
+    buffer = buf,
+    group = group,
+    desc = "leterejo: show the row under the cursor below the list",
+    callback = preview_soon,
+  })
+
+  -- Not buffer-local: the pane can change shape while the cursor is in the
+  -- body, and the list still has to be laid out again.
+  vim.api.nvim_create_autocmd({ "VimResized", "WinResized" }, {
+    group = group,
+    desc = "leterejo: lay the list and the preview out again after a resize",
+    callback = relayout_soon,
+  })
+
+  vim.api.nvim_create_autocmd({ "CursorMoved", "WinScrolled" }, {
+    buffer = buf,
+    group = group,
+    desc = "leterejo: extend the list as it is scrolled",
+    callback = function()
+      if not continuous() then
+        return
+      end
+
+      local win = vim.api.nvim_get_current_win()
+      if vim.api.nvim_win_get_buf(win) ~= buf then
+        return
+      end
+
+      -- Measure against the last visible line, not the cursor: scrolling with
+      -- the mouse or Ctrl-E never moves the cursor at all.
+      local bottom = vim.fn.line("w$")
+      local rows = #(state.envelopes or {})
+      if rows - (bottom - header_height()) <= config.options.chunk_lookahead then
+        load_more(buf)
+      end
+    end,
+  })
+end
+
+-- Open the list, reusing the buffer when one already exists.
+function M.open()
+  hl.setup()
+
+  local buf = find_buf()
+
+  if not buf then
+    buf = vim.api.nvim_create_buf(false, true)
+    vim.api.nvim_buf_set_name(buf, BUFNAME)
+    vim.bo[buf].buftype = "nofile"
+    vim.bo[buf].bufhidden = "hide"
+    vim.bo[buf].swapfile = false
+    vim.bo[buf].filetype = "leterejo-envelopes"
+    setup_keymaps(buf)
+    watch_cursor(buf)
+  end
+
+  vim.api.nvim_win_set_buf(0, buf)
+  vim.wo.wrap = false
+  vim.wo.number = false
+  vim.wo.relativenumber = false
+  vim.wo.cursorline = true
+
+  -- Do not draw here. refresh() draws after consulting the cache; drawing an
+  -- empty state first would flash "no messages".
+  M.refresh()
+end
+
+return M
