@@ -118,9 +118,24 @@ function M.send()
   local cc = parse_addrs(headers["cc"])
   local bcc = parse_addrs(headers["bcc"])
 
+  -- Which address the message says it is from.
+  --
+  -- Not the same question as which account sends it: the account decides the
+  -- SMTP path, and a provider that has been told to expect another address can
+  -- carry mail for it. Gmail calls that "send mail as", and it has to be set up
+  -- there first — otherwise it rewrites the header or refuses the message.
+  local from = parse_addrs(headers["from"])[1]
+    or ((config.options.accounts or {})[account] or {}).email
+
+  if not from or from == "" then
+    return vim.notify(lang.e("no_email_configured", account), vim.log.levels.ERROR)
+  end
+
   -- Bcc yourself on this route to keep a copy. Some servers run tight on
-  -- quota and skip the sent folder entirely.
-  local auto = (config.options.auto_bcc or {})[account]
+  -- quota and skip the sent folder entirely. Looked up by the address it is
+  -- sent as, then by the account, so a copy follows the address whichever
+  -- route it takes.
+  local auto = (config.options.auto_bcc or {})[from] or (config.options.auto_bcc or {})[account]
   if auto then
     local already = false
     for _, a in ipairs(bcc) do
@@ -156,14 +171,7 @@ function M.send()
   -- Always pass the sender. himalaya v2 does not fill From from its own
   -- configuration (v1's display-name and friends were removed), and without
   -- it sending stops at `No 'From:' header found in raw message`.
-  local my = ((config.options.accounts or {})[account] or {}).email
-  if not my or my == "" then
-    return vim.notify(
-      lang.e("no_email_configured", account),
-      vim.log.levels.ERROR
-    )
-  end
-  vim.list_extend(args, { "--from", my })
+  vim.list_extend(args, { "--from", from })
 
   for _, a in ipairs(to) do
     vim.list_extend(args, { "-t", a })
@@ -188,7 +196,15 @@ function M.send()
   table.insert(args, "--send")
 
   local label = #bcc > 0 and lang.t("bcc_note", table.concat(bcc, ", ")) or ""
-  vim.notify(lang.t("sending", account, label), vim.log.levels.INFO)
+
+  -- Say both when they differ. Sending as one address through another's server
+  -- is the case most worth reading back before it goes.
+  local own = ((config.options.accounts or {})[account] or {}).email
+  if own and own:lower() ~= from:lower() then
+    vim.notify(lang.t("sending_via", from, account, label), vim.log.levels.INFO)
+  else
+    vim.notify(lang.t("sending", account, label), vim.log.levels.INFO)
+  end
 
   cli.text(args, account, function(ok, out)
     if not ok then
@@ -262,18 +278,34 @@ local function open_buffer(lines, cursor_line)
   return buf
 end
 
--- Build the header block, keeping the outgoing account visible.
+-- Build the header block, keeping the outgoing account and address visible.
+--
+-- Both are editable. The account picks the route the message takes; From is
+-- what the message says, and the two need not name the same address — a
+-- provider told to expect another one will carry mail for it.
 local function header_lines(account, to, cc, subject)
-  local auto = (config.options.auto_bcc or {})[account]
-  local lines = {
+  local from = ((config.options.accounts or {})[account] or {}).email or ""
+  local auto = (config.options.auto_bcc or {})[from] or (config.options.auto_bcc or {})[account]
+
+  return {
     "X-Leterejo-Account: " .. account,
+    "From: " .. from,
     "To: " .. (to or ""),
     "Cc: " .. (cc or ""),
     "Bcc: " .. (auto or ""),
     "Subject: " .. (subject or ""),
     "",
   }
-  return lines
+end
+
+-- Which line to leave the cursor on: the first empty header worth filling in.
+local function first_gap(lines, name)
+  for i, line in ipairs(lines) do
+    if line:lower():sub(1, #name + 1) == name:lower() .. ":" then
+      return i
+    end
+  end
+  return 1
 end
 
 -- Start a new message.
@@ -283,7 +315,7 @@ function M.compose()
 
   local lines = header_lines(account, "", "", "")
   table.insert(lines, "")
-  open_buffer(lines, 2)
+  open_buffer(lines, first_gap(lines, "To"))
 end
 
 -- Pull addresses out of one header line, keeping the "Name <addr>" form.
@@ -426,7 +458,7 @@ function M.forward(envelope)
 
   local lines = header_lines(account, "", "", subject)
   table.insert(lines, "")
-  open_buffer(lines, 2)
+  open_buffer(lines, first_gap(lines, "To"))
 end
 
 return M

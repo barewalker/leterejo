@@ -298,12 +298,17 @@ M.defaults = {
     thread = 4,
   },
 
-  -- Addresses to Bcc automatically, per account.
+  -- Addresses to Bcc automatically.
+  --
+  -- Keyed either by account name or by the address in From, and the address
+  -- wins. That matters when the two differ: sending as a work address through
+  -- another provider's server should still keep the work copy, whichever route
+  -- the message took.
   --
   -- Useful where the sent folder is unavailable — quota-constrained servers,
   -- or a workflow that already keeps copies elsewhere. The copy arrives in the
   -- inbox like any other message.
-  -- e.g. { work = "you@work.example" }
+  -- e.g. { work = "you@work.example" }, or { ["you@work.example"] = "you@work.example" }
   auto_bcc = {},
 
   -- How many envelopes `is:suspicious` reads back to look at.
