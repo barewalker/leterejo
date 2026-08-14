@@ -57,20 +57,48 @@ select = function(items, prompt, on_choice, opts)
   end)
 end
 
--- Ask for a mailbox of the current account and hand back the name.
+-- Ask for something to look at, and hand back the name.
 --
--- Switching to one and moving a message into one need the same list, so the
--- fetch and the picker live here and the caller decides what it is for.
--- The list is what is actually on disk, plus whatever views the account
--- defined by query. Asking the server would offer names with nothing behind
--- them, since only part of it was ever synced down.
-function M.pick_mailbox_name(prompt, on_choice)
-  require("leterejo.notmuch").mailboxes(state.account, function(ok, res)
+-- Switching to one and moving a message into one are not the same question, so
+-- they do not get the same list. Moving means putting a tag on, and a view —
+-- a query with a name, such as a directory of archived mail — is not a tag and
+-- must not be offered as one.
+--
+--   opts.tags_only : leave the views out
+function M.pick_mailbox_name(prompt, on_choice, opts)
+  opts = opts or {}
+
+  local notmuch = require("leterejo.notmuch")
+
+  if opts.tags_only then
+    return notmuch.tags(function(ok, tags)
+      if not ok then
+        return vim.notify(lang.t("prefix") .. tags, vim.log.levels.ERROR)
+      end
+      select(tags, prompt, on_choice)
+    end)
+  end
+
+  notmuch.mailboxes(state.account, function(ok, names, is_view)
     if not ok then
-      return vim.notify(lang.t("prefix") .. res, vim.log.levels.ERROR)
+      return vim.notify(lang.t("prefix") .. names, vim.log.levels.ERROR)
     end
 
-    select(res, prompt, on_choice)
+    -- Say which are views. They behave differently — nothing can be moved into
+    -- one — and a list that looks uniform invites treating them alike.
+    local items, name_of = {}, {}
+    for _, name in ipairs(names) do
+      local line = is_view[name] and (name .. "  " .. lang.t("is_a_view")) or name
+      table.insert(items, line)
+      name_of[line] = name
+    end
+
+    select(items, prompt, function(line)
+      local name = name_of[line]
+      if name then
+        on_choice(name)
+      end
+    end)
   end)
 end
 

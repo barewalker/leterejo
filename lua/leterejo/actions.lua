@@ -418,7 +418,7 @@ function M.move(envelope, after)
 
   require("leterejo.pickers").pick_mailbox_name(lang.t("pick_move_target"), function(name)
     M.move_to(envelope, name, after)
-  end)
+  end, { tags_only = true })
 end
 
 return M
