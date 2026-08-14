@@ -7,10 +7,10 @@
 --
 -- Consequently this buffer holds only the author's own words; himalaya appends
 -- the quoted original on reply.
-local cache = require("leterejo.cache")
 local cli = require("leterejo.cli")
 local config = require("leterejo.config")
 local lang = require("leterejo.lang")
+local notmuch = require("leterejo.notmuch")
 local state = require("leterejo.state")
 local util = require("leterejo.ui.util")
 
@@ -266,7 +266,7 @@ end
 local function header_lines(account, to, cc, subject)
   local auto = (config.options.auto_bcc or {})[account]
   local lines = {
-    "X-Sherpa-Account: " .. account,
+    "X-Leterejo-Account: " .. account,
     "To: " .. (to or ""),
     "Cc: " .. (cc or ""),
     "Bcc: " .. (auto or ""),
@@ -375,10 +375,8 @@ function M.reply(envelope, all)
   end
 
   -- Replying to all needs the original To and Cc. Envelopes carry no Cc, so
-  -- read the body's headers; a remembered body means no wait in most cases.
-  local account, mailbox, id = state.account, state.mailbox, envelope.id
-  local hit = cache.get_message(account, mailbox, id)
-
+  -- the body's headers are read; from the index that costs milliseconds, so it
+  -- happens without announcing itself.
   local function with_body(body)
     local to_list, cc_list = {}, {}
 
@@ -400,12 +398,7 @@ function M.reply(envelope, all)
     open_reply(envelope, true, to_list, cc_list)
   end
 
-  if hit and hit.body then
-    return with_body(hit.body)
-  end
-
-  vim.notify(lang.t("looking_up"), vim.log.levels.INFO)
-  cli.read_message(account, mailbox, id, function(ok, out)
+  notmuch.read(envelope.id, function(ok, out)
     if not ok then
       vim.notify(lang.e("reply_fallback"), vim.log.levels.WARN)
       return open_reply(envelope, false)

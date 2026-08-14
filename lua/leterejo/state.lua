@@ -1,4 +1,4 @@
--- Where we currently are: account, mailbox, page.
+-- Where we currently are: account and mailbox.
 --
 -- Both the list and the message buffer read this, so it lives apart from the
 -- screen. Closing a buffer keeps the state, and reopening returns to the same
@@ -8,7 +8,6 @@ local config = require("leterejo.config")
 local M = {
   account = nil,
   mailbox = "inbox",
-  page = 1,
 
   -- Envelopes currently listed, kept so a row number maps back to one.
   --
@@ -35,9 +34,6 @@ local M = {
   total = nil,
   loading = false,
 
-  -- Whether the passphrase has been unlocked once.
-  warmed_up = false,
-
   -- The message on display. Attachment actions target it.
   -- { account, mailbox, id, attachments }
   current_message = nil,
@@ -57,11 +53,6 @@ local M = {
   -- { text = "...", server = true|false, scanned = N }
   query = nil,
 }
-
-function M.reset_page()
-  M.page = 1
-  M.reset_list()
-end
 
 -- Forget everything about the list currently held.
 --

@@ -40,8 +40,11 @@ end
 --
 -- Switching to one and moving a message into one need the same list, so the
 -- fetch and the picker live here and the caller decides what it is for.
+-- The list is what is actually on disk, plus whatever views the account
+-- defined by query. Asking the server would offer names with nothing behind
+-- them, since only part of it was ever synced down.
 function M.pick_mailbox_name(prompt, on_choice)
-  cli.list_mailboxes(state.account, function(ok, res)
+  require("leterejo.notmuch").folders(state.account, function(ok, res)
     if not ok then
       return vim.notify(lang.t("prefix") .. res, vim.log.levels.ERROR)
     end
@@ -53,7 +56,7 @@ end
 function M.pick_mailbox()
   M.pick_mailbox_name(lang.t("pick_mailbox"), function(name)
     state.mailbox = name
-    state.reset_page()
+    state.reset_list()
     require("leterejo.ui.envelopes").refresh()
   end)
 end
@@ -69,7 +72,7 @@ function M.pick_account()
       -- Mailbox names differ per account (Gmail renames its special
       -- folders with the display language), so fall back to the inbox.
       state.mailbox = "inbox"
-      state.reset_page()
+      state.reset_list()
       require("leterejo.ui.envelopes").refresh()
     end)
   end)
