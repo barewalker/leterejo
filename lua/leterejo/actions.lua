@@ -125,7 +125,7 @@ end
 -- `refusal` is what lieer said while exiting successfully, when it said
 -- anything: the change was not sent, and its own words are more use than a
 -- sentence of ours guessing at why.
-local function reverted(change, refusal)
+local function reverted(id, change, refusal)
   local wanted = {}
   for _, t in ipairs(change.add or {}) do
     table.insert(wanted, "+" .. t)
@@ -139,7 +139,16 @@ local function reverted(change, refusal)
     vim.notify(lang.t("prefix") .. refusal, vim.log.levels.WARN)
   end
 
-  require("leterejo.ui.envelopes").refresh()
+  -- Take the change back out of the index as well.
+  --
+  -- Otherwise it is stranded: lieer's pull moves `lastmod` past a change it
+  -- refused to push, so push never looks at it again, and the index keeps
+  -- saying something Gmail does not — a message tagged both spam and inbox,
+  -- which cannot be true there. Better to agree with the server about a change
+  -- that did not happen than to remember one that never will.
+  notmuch.tag(id, { add = change.remove, remove = change.add }, function()
+    require("leterejo.ui.envelopes").refresh()
+  end)
 end
 
 -- Check the change survived the sync, and reapply it once if it did not.
@@ -157,16 +166,16 @@ local function confirm(account, id, change, tries, refusal)
       return
     end
     if tries <= 0 then
-      return reverted(change, refusal)
+      return reverted(id, change, refusal)
     end
 
     notmuch.tag(id, change, function(tagged)
       if not tagged then
-        return reverted(change, refusal)
+        return reverted(id, change, refusal)
       end
       lieer.sync(account, function(synced, _, refused)
         if not synced then
-          return reverted(change, refusal)
+          return reverted(id, change, refusal)
         end
         confirm(account, id, change, tries - 1, refused or refusal)
       end)
