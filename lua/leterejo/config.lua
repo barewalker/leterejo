@@ -334,7 +334,10 @@ M.defaults = {
       move = "M", -- move to a mailbox you pick
       refresh = "u", -- refetch
       drafts = "D", -- open a saved draft
-      filters = "\\", -- pick a filter instead of typing one
+      -- Not "\\": that is the local leader in a common setup (LazyVim), where
+      -- pressing it waits for a second key and this never fires. "g" is
+      -- already a prefix, so hanging this off it takes no single key away.
+      filters = "g/", -- pick a filter instead of typing one
       -- l and h do nothing useful in a list of fixed-width rows, so they open
       -- and close the conversation instead. <Tab> toggles.
       expand = "l",
