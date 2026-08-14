@@ -121,8 +121,24 @@ end
 -- Rare enough to be worth the whole refetch: it happens only when Gmail moved
 -- on between our tagging and our push, and leaving a row showing a state that
 -- was undone is worse than a moment's redraw.
-local function reverted()
-  vim.notify(lang.e("change_reverted"), vim.log.levels.WARN)
+--
+-- `refusal` is what lieer said while exiting successfully, when it said
+-- anything: the change was not sent, and its own words are more use than a
+-- sentence of ours guessing at why.
+local function reverted(change, refusal)
+  local wanted = {}
+  for _, t in ipairs(change.add or {}) do
+    table.insert(wanted, "+" .. t)
+  end
+  for _, t in ipairs(change.remove or {}) do
+    table.insert(wanted, "-" .. t)
+  end
+
+  vim.notify(lang.e("change_reverted", table.concat(wanted, " ")), vim.log.levels.WARN)
+  if refusal then
+    vim.notify(lang.t("prefix") .. refusal, vim.log.levels.WARN)
+  end
+
   require("leterejo.ui.envelopes").refresh()
 end
 
@@ -132,7 +148,7 @@ end
 -- at the next push, but the pull in the same run has already put the old tags
 -- back by then, so there is nothing left to re-try. Setting them again against
 -- the state that has just arrived is what actually gets it through.
-local function confirm(account, id, change, tries)
+local function confirm(account, id, change, tries, refusal)
   notmuch.tags_of(id, function(ok, tags)
     if not ok then
       return -- cannot tell; leave the screen alone rather than guess
@@ -141,18 +157,18 @@ local function confirm(account, id, change, tries)
       return
     end
     if tries <= 0 then
-      return reverted()
+      return reverted(change, refusal)
     end
 
     notmuch.tag(id, change, function(tagged)
       if not tagged then
-        return reverted()
+        return reverted(change, refusal)
       end
-      lieer.sync(account, function(synced)
+      lieer.sync(account, function(synced, _, refused)
         if not synced then
-          return reverted()
+          return reverted(change, refusal)
         end
-        confirm(account, id, change, tries - 1)
+        confirm(account, id, change, tries - 1, refused or refusal)
       end)
     end)
   end)
@@ -169,11 +185,11 @@ local function push(account, id, change)
     return vim.notify(lang.e("no_lieer_dir_note"), vim.log.levels.WARN)
   end
 
-  lieer.sync(account, function(ok, res)
+  lieer.sync(account, function(ok, res, refused)
     if not ok then
       return vim.notify(lang.e("sync_failed", tostring(res)), vim.log.levels.WARN)
     end
-    confirm(account, id, change, 1)
+    confirm(account, id, change, 1, refused)
   end)
 end
 
