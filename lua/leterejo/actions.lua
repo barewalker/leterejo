@@ -1,15 +1,18 @@
--- Operations that change mail on the server.
+-- Operations that change mail.
 --
 -- Kept apart from the buffers because the list and the body act on the same
 -- message and would otherwise hold two copies of this. Every operation here
 -- refuses to run on a read-only account.
 --
--- himalaya v2 spends seconds on each command, so the outcome is written into
--- the envelope we already hold and drawn straight away rather than waiting for
--- another list fetch. The next refetch confirms it.
-local cli = require("leterejo.cli")
+-- Each one is a change of tags, and it happens in three steps. The index is
+-- told, which costs milliseconds. The screen is corrected from what is already
+-- held, so the row answers at once rather than waiting for a refetch. Then the
+-- change is pushed to Gmail, and the tags are read back to see that it survived
+-- — because a push lieer could not make is followed by a pull that undoes it.
 local config = require("leterejo.config")
 local lang = require("leterejo.lang")
+local lieer = require("leterejo.lieer")
+local notmuch = require("leterejo.notmuch")
 local state = require("leterejo.state")
 local util = require("leterejo.ui.util")
 
@@ -36,6 +39,15 @@ end
 -- Moving elsewhere mid-flight must not rewrite the list now on screen.
 local function still_here(account, mailbox)
   return state.account == account and state.mailbox == mailbox
+end
+
+-- The tag standing for one of the states this plugin knows by name.
+--
+-- lieer decides these: they are its translation of Gmail's own labels
+-- (UNREAD, STARRED, INBOX, TRASH, SPAM). Configurable because a translation
+-- overlay can change them, not because they are a matter of taste.
+local function tag(kind)
+  return (config.options.tags or {})[kind] or kind
 end
 
 -- Record a flag change on the envelope in hand.
@@ -82,55 +94,228 @@ local function forget_locally(envelope)
   return removed
 end
 
--- Flags --------------------------------------------------------------------
+-- Pushing it up ------------------------------------------------------------
 
--- Add or remove one flag, whichever the message is not already.
-local function toggle_flag(envelope, flag, on_key, off_key)
+-- Whether the tags a message now carries are the ones we asked for.
+local function stuck(tags, change)
+  local has = {}
+  for _, t in ipairs(tags) do
+    has[t] = true
+  end
+
+  for _, t in ipairs(change.add or {}) do
+    if not has[t] then
+      return false
+    end
+  end
+  for _, t in ipairs(change.remove or {}) do
+    if has[t] then
+      return false
+    end
+  end
+  return true
+end
+
+-- The list on screen is now wrong; say so and read it again.
+--
+-- Rare enough to be worth the whole refetch: it happens only when Gmail moved
+-- on between our tagging and our push, and leaving a row showing a state that
+-- was undone is worse than a moment's redraw.
+local function reverted()
+  vim.notify(lang.e("change_reverted"), vim.log.levels.WARN)
+  require("leterejo.ui.envelopes").refresh()
+end
+
+-- Check the change survived the sync, and reapply it once if it did not.
+--
+-- lieer will not push onto a remote that has moved on. It says it will re-try
+-- at the next push, but the pull in the same run has already put the old tags
+-- back by then, so there is nothing left to re-try. Setting them again against
+-- the state that has just arrived is what actually gets it through.
+local function confirm(account, id, change, tries)
+  notmuch.tags_of(id, function(ok, tags)
+    if not ok then
+      return -- cannot tell; leave the screen alone rather than guess
+    end
+    if stuck(tags, change) then
+      return
+    end
+    if tries <= 0 then
+      return reverted()
+    end
+
+    notmuch.tag(id, change, function(tagged)
+      if not tagged then
+        return reverted()
+      end
+      lieer.sync(account, function(synced)
+        if not synced then
+          return reverted()
+        end
+        confirm(account, id, change, tries - 1)
+      end)
+    end)
+  end)
+end
+
+-- Hand the change to Gmail, if there is anywhere to hand it to.
+local function push(account, id, change)
+  local opts = config.options.lieer or {}
+  if opts.sync_on_write == false then
+    return -- the user asked for writes to stay here until something syncs
+  end
+
+  if not lieer.configured(account) then
+    return vim.notify(lang.e("no_lieer_dir_note"), vim.log.levels.WARN)
+  end
+
+  lieer.sync(account, function(ok, res)
+    if not ok then
+      return vim.notify(lang.e("sync_failed", tostring(res)), vim.log.levels.WARN)
+    end
+    confirm(account, id, change, 1)
+  end)
+end
+
+-- Carrying one out ----------------------------------------------------------
+
+-- Apply a change of tags to one message.
+--
+--   change  : { add = { "..." }, remove = { "..." } }
+--   opts.locally : correct the envelope we hold, returning whether the row
+--                  should leave the list
+--   opts.said    : what to report once it has gone through
+--   opts.after   : called once it has gone through
+local function apply(envelope, change, opts)
   if not envelope or not writable() then
     return
   end
 
-  local account, mailbox = state.account, state.mailbox
-  local set = util.has_flag(envelope, flag)
-  local call = set and cli.remove_flags or cli.add_flags
+  local account, mailbox, id = state.account, state.mailbox, envelope.id
 
-  call(account, mailbox, { envelope.id }, { flag }, function(ok, res)
+  notmuch.tag(id, change, function(ok, res)
     if not ok then
       return err(res)
     end
 
-    -- The envelope is the same object either way, so the flag is worth
-    -- recording even if we have moved on; only the screen belongs to where
-    -- we were.
-    set_flag_locally(envelope, flag, not set)
-
-    if still_here(account, mailbox) then
+    local gone = opts.locally and opts.locally(envelope) or false
+    if still_here(account, mailbox) and (not gone or forget_locally(envelope)) then
       redraw()
     end
 
-    vim.notify(lang.t(set and off_key or on_key), vim.log.levels.INFO)
+    if opts.said then
+      vim.notify(opts.said, vim.log.levels.INFO)
+    end
+    if opts.after then
+      opts.after()
+    end
+
+    push(account, id, change)
   end)
 end
 
+-- Flags --------------------------------------------------------------------
+
 -- Mark read or unread.
 --
--- Bodies are fetched with BODY.PEEK, so reading one never sets this by
--- itself; it is only ever set from here.
+-- Reading a message never sets this by itself — nothing here writes to the
+-- index while drawing — so it is only ever set from this key.
 function M.toggle_seen(envelope)
-  toggle_flag(envelope, "seen", "marked_read", "marked_unread")
+  if not envelope then
+    return
+  end
+
+  local seen = util.has_flag(envelope, "seen")
+  local change = seen and { add = { tag("unread") } } or { remove = { tag("unread") } }
+
+  apply(envelope, change, {
+    said = lang.t(seen and "marked_unread" or "marked_read"),
+    locally = function(e)
+      set_flag_locally(e, "seen", not seen)
+      return false
+    end,
+  })
 end
 
 -- Add or remove the flagged mark (a star, in most other clients).
 function M.toggle_flagged(envelope)
-  toggle_flag(envelope, "flagged", "marked_flagged", "marked_unflagged")
+  if not envelope then
+    return
+  end
+
+  local flagged = util.has_flag(envelope, "flagged")
+  local change = flagged and { remove = { tag("flagged") } } or { add = { tag("flagged") } }
+
+  apply(envelope, change, {
+    said = lang.t(flagged and "marked_unflagged" or "marked_flagged"),
+    locally = function(e)
+      set_flag_locally(e, "flagged", not flagged)
+      return false
+    end,
+  })
 end
 
 -- Moving -------------------------------------------------------------------
 
--- Move a message to another mailbox of the same account.
---
---   dest  : destination mailbox, as himalaya should receive it
---   after : called once the move has gone through
+-- Whether dropping these tags takes the message out of the list on screen.
+local function leaves_view(change)
+  local here = notmuch.tag_for(state.account, state.mailbox)
+  return here ~= nil and vim.tbl_contains(change.remove or {}, here)
+end
+
+local function drops_row()
+  return function()
+    return true
+  end
+end
+
+-- Archive: take the inbox label off and leave everything else alone. That is
+-- what archiving is on Gmail, and there is no separate place the message goes.
+function M.archive(envelope, after)
+  local change = { remove = { tag("inbox") } }
+  apply(envelope, change, {
+    said = lang.t("archived"),
+    after = after,
+    locally = leaves_view(change) and drops_row() or nil,
+  })
+end
+
+-- Delete, which here means the trash label. Undone by taking it off again.
+function M.trash(envelope, after)
+  if not envelope or not writable() then
+    return
+  end
+
+  local change = { add = { tag("trash") }, remove = { tag("inbox") } }
+  local function go()
+    apply(envelope, change, { said = lang.t("trashed"), after = after, locally = drops_row() })
+  end
+
+  if not config.options.confirm_delete then
+    return go()
+  end
+
+  local subject = util.truncate(util.strip_invisible(envelope.subject or lang.t("no_subject")), 50)
+  local yes = lang.t("trash_yes")
+
+  vim.ui.select({ yes, lang.t("trash_no") }, { prompt = lang.t("trash_prompt", subject) }, function(choice)
+    if choice == yes then
+      go()
+    end
+  end)
+end
+
+-- Report as spam. On Gmail the label is what trains the filter.
+function M.spam(envelope, after)
+  apply(envelope, { add = { tag("spam") }, remove = { tag("inbox") } }, {
+    said = lang.t("spammed"),
+    after = after,
+    locally = drops_row(),
+  })
+end
+
+-- Move to a mailbox chosen from the list, which on Gmail means relabelling:
+-- the chosen label goes on, and the one being looked at comes off.
 function M.move_to(envelope, dest, after)
   if not envelope or not writable() then
     return
@@ -140,95 +325,21 @@ function M.move_to(envelope, dest, after)
     return vim.notify(lang.e("already_there", dest), vim.log.levels.WARN)
   end
 
-  local account, mailbox = state.account, state.mailbox
+  local change = { add = { dest } }
+  local here = notmuch.tag_for(state.account, state.mailbox)
+  if here then
+    change.remove = { here }
+  end
 
   vim.notify(lang.t("moving", dest), vim.log.levels.INFO)
 
-  cli.move_messages(account, mailbox, dest, { envelope.id }, function(ok, res)
-    if not ok then
-      return err(res)
-    end
-
-    -- Take the row off the screen rather than refetch the list for one
-    -- message; the next refetch confirms it.
-    if still_here(account, mailbox) and forget_locally(envelope) then
-      redraw()
-    end
-
-    vim.notify(lang.t("moved", dest), vim.log.levels.INFO)
-
-    if after then
-      after()
-    end
-  end)
+  apply(envelope, change, {
+    said = lang.t("moved", dest),
+    after = after,
+    locally = leaves_view(change) and drops_row() or nil,
+  })
 end
 
--- The mailbox this account uses for one of the moving actions.
-local function target(name)
-  local dest = config.account_option(state.account, name .. "_mailbox")
-  if type(dest) ~= "string" or dest == "" then
-    local kind = lang.t("kind_" .. name)
-    vim.notify(lang.e("no_mailbox_configured", kind, state.account_label()), vim.log.levels.WARN)
-    return nil
-  end
-  return dest
-end
-
--- Delete, which here means moving to the trash.
---
--- v2 offers nothing else: there is no delete command, and its flag command
--- does not accept \Deleted. Moving is the better shape anyway — it is undone
--- by moving back.
-function M.trash(envelope, after)
-  if not envelope or not writable() then
-    return
-  end
-
-  local dest = target("trash")
-  if not dest then
-    return
-  end
-
-  if not config.options.confirm_delete then
-    return M.move_to(envelope, dest, after)
-  end
-
-  local subject = util.truncate(util.strip_invisible(envelope.subject or lang.t("no_subject")), 50)
-  local yes = lang.t("trash_yes")
-
-  vim.ui.select({ yes, lang.t("trash_no") }, { prompt = lang.t("trash_prompt", subject) }, function(choice)
-    if choice == yes then
-      M.move_to(envelope, dest, after)
-    end
-  end)
-end
-
--- Archive: on Gmail this is a move to all-mail, which only takes the inbox
--- label off. Elsewhere it is whatever mailbox holds kept mail.
-function M.archive(envelope, after)
-  if not envelope or not writable() then
-    return
-  end
-
-  local dest = target("archive")
-  if dest then
-    M.move_to(envelope, dest, after)
-  end
-end
-
--- Report as spam. On Gmail the move is what trains the filter.
-function M.spam(envelope, after)
-  if not envelope or not writable() then
-    return
-  end
-
-  local dest = target("spam")
-  if dest then
-    M.move_to(envelope, dest, after)
-  end
-end
-
--- Move to a mailbox chosen from the list.
 function M.move(envelope, after)
   if not envelope or not writable() then
     return

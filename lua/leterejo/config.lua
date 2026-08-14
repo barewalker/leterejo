@@ -56,15 +56,15 @@ M.defaults = {
   --                to drop yourself from a reply-all. himalaya's
   --                `account list` does not report addresses, so it goes here
   --   readonly   : refuse every operation that would modify mail
+  --   lieer_dir  : the lieer repository for this account — the directory
+  --                holding .gmailieer.json and the mail it fetched. Changes
+  --                made here are pushed by running `gmi sync` in it
   --   folders    : mailbox name -> the directory a sync tool actually made,
   --                e.g. { inbox = "gmail/INBOX" }
   --   queries    : mailbox name -> a notmuch query, for views that are not one
   --                directory, e.g. { inbox = "tag:inbox" }
   --   query_for  : function(mailbox) -> notmuch query, when the two tables
   --                above are not enough
-  --
-  -- trash_mailbox, archive_mailbox and spam_mailbox may also be set here,
-  -- overriding the values further down for that account alone.
   --
   -- Empty by default. Anything named here is merged into what setup() is
   -- given, so a shipped example would appear in every user's account list.
@@ -74,19 +74,62 @@ M.defaults = {
   -- default remains available on its own key.
   reply_mode = "all",
 
-  -- Where the mail-moving actions send a message.
+  -- The tags standing for the states this plugin knows by name.
   --
-  -- himalaya v2 has no delete command, and its flag command does not accept
-  -- \Deleted either, so deleting means moving to the trash mailbox. Names go
-  -- through the account's [mailbox.alias] map in himalaya's own config, which
-  -- is why the short forms below work; anything unmatched is passed verbatim.
+  -- A mailbox is a tag and a change of state is a change of tag, because on
+  -- Gmail a mailbox is a label. Marking read is `-unread`, archiving is
+  -- `-inbox`, and deleting is `+trash` — there is no delete, and undoing one is
+  -- taking the tag off again.
   --
-  -- On Gmail a mailbox is a label: moving to all-mail takes the message out of
-  -- the inbox and nothing else, which is what archiving is there. Elsewhere
-  -- that mailbox is usually called "Archive". Set any of these per account.
-  trash_mailbox = "trash",
-  archive_mailbox = "all-mail",
-  spam_mailbox = "spam",
+  -- These are lieer's translation of Gmail's own labels (UNREAD, STARRED,
+  -- INBOX, TRASH, SPAM), so they are set here for the case where a translation
+  -- overlay changed them, not as a matter of taste.
+  tags = {
+    unread = "unread",
+    flagged = "flagged",
+    inbox = "inbox",
+    trash = "trash",
+    spam = "spam",
+  },
+
+  -- Tags that are not places, and so are not offered as mailboxes.
+  --
+  -- Every tag in the index is a mailbox, since that is what a Gmail label is —
+  -- except the ones that describe a message rather than say where it is.
+  -- Offering those would be offering to move mail into "unread".
+  mailbox_hidden_tags = {
+    "unread",
+    "flagged",
+    "attachment",
+    "replied",
+    "passed",
+    "signed",
+    "encrypted",
+    "new",
+  },
+
+  -- Pushing what changed here up to Gmail.
+  --
+  --   dir          : the lieer repository, when one account covers everything.
+  --                  Per account, set `lieer_dir` in the accounts table above.
+  --                  Nothing is guessed: the index can span several
+  --                  repositories, and picking the wrong one would push one
+  --                  account's changes at another
+  --   sync_on_write: run `gmi sync` after every change. With it off, changes
+  --                  stay in the index until something else syncs
+  --   timeout      : how long one sync may take (milliseconds)
+  --   retries      : how many times to come back when another gmi holds the
+  --                  repository. It takes the lock without waiting, so a sync
+  --                  meeting a timer fails at once rather than queueing
+  --   retry_delay  : how long to wait before coming back (milliseconds)
+  lieer = {
+    executable = "gmi",
+    dir = nil,
+    sync_on_write = true,
+    timeout = 120000,
+    retries = 2,
+    retry_delay = 3000,
+  },
 
   -- Whether to ask before moving a message to the trash.
   -- Archiving and reporting spam do not ask: both are easy to undo by hand.
@@ -334,19 +377,6 @@ M.options = vim.deepcopy(M.defaults)
 function M.setup(opts)
   M.options = vim.tbl_deep_extend("force", vim.deepcopy(M.defaults), opts or {})
   return M.options
-end
-
--- A setting for one account, falling back to the plugin-wide value.
---
--- Mailbox names differ per account — Gmail renames its special folders with
--- the display language — so the moving actions have to ask per account rather
--- than read the top-level value directly.
-function M.account_option(account, name)
-  local a = account and M.options.accounts[account] or nil
-  if a and a[name] ~= nil then
-    return a[name]
-  end
-  return M.options[name]
 end
 
 -- Whether the given account is read-only.

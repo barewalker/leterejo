@@ -33,6 +33,28 @@ The screen calls notmuch directly, so the read half of `cli.lua` went with it
 Filtering no longer has a server-search or a scan-locally path, only the index
 and the two `is:` filters the index cannot answer.
 
+**Writing is tagging.** `actions.lua` sets or clears a notmuch tag and then
+runs `gmi sync` in the account's lieer repository. Marking read is `-unread`,
+archiving is `-inbox`, trash and spam are `+trash` / `+spam` with the inbox
+label taken off, and moving is relabelling: the chosen label on, the one being
+looked at off. A mailbox is a tag now, so `query_for` answers `tag:"..."` and
+the mailbox picker lists the tags in use rather than walking the tree for
+Maildir folders; `folders` and `queries` on an account still name a directory or
+spell out a query, which is what the Takeout archive needs.
+
+Since the write path no longer needs an IMAP UID, `notmuch.uid_of`,
+`cli.resolve_ids`, the `,U=` parsing and `err_archive_only` are gone, and with
+them the rest of `cli.lua`'s write half. What is left of that file is sending
+and the account list.
+
+A sync that returns zero is not taken as success. lieer refuses to push onto a
+remote that has moved on and the pull in the same run puts the old tags back, so
+the tags are read again afterwards; if the change did not survive it is applied
+once more against the state that just arrived, and only if that fails too does
+the user hear about it and the list get read again. A sync meeting another `gmi`
+fails at once rather than queueing (the lock is taken without waiting), so that
+case is recognised by its message and retried after a pause.
+
 Two smaller ones. `cli.warm_up` is gone: it ran `himalaya account list` before
 the first list to get pinentry out of the way, and `account list` only
 enumerates the configuration — it is unlikely to have read `pass` at all. Now
@@ -41,55 +63,33 @@ sending, which the user asked for and can answer a prompt during. And the compos
 buffer wrote `X-Sherpa-Account:` while sending read `X-Leterejo-Account:`, so the
 header never matched and the account always fell back to the current one.
 
-## To remove
+## What lieer does, measured
 
-**The IMAP UID.** `notmuch.uid_of`, `cli.resolve_ids`, the `,U=<n>` filename
-parsing and `err_archive_only`. lieer names files `<Gmail id>:2,<flags>`, so
-there is no UID in them to recover — every message would report itself as
-archive-only. Goes together with the write path below, which is what still
-calls it.
+The write path is built on these, so they are worth keeping written down.
 
-**What is left of `cli.lua`.** Sending, and `list_accounts` because himalaya's
-configuration is still where accounts are declared. `compose.lua` can call it
-directly.
-
-## To add
-
-**Writing through tags.** `actions.lua` resolves a UID and calls
-`himalaya flag` / `message move`. It should set or clear a notmuch tag and then
-run `gmi sync`.
-
-The mapping lieer uses (`lieer/local.py:36`, `translate_labels_default`):
+**The label map** (`lieer/local.py:36`, `translate_labels_default`):
 
     INBOX→inbox  UNREAD→unread  STARRED→flagged  IMPORTANT→important
     SENT→sent  DRAFT→draft  TRASH→trash  SPAM→spam
 
-So: mark read is `-unread`, archive is `-inbox`, trash is `+trash`, spam is
-`+spam`, flag is `+flagged`. `CATEGORY_*` is ignored by default.
+`CATEGORY_*` is ignored by default.
 
-**`sync`, not `push`.** `gmi sync` pushes first and then pulls
-(`gmailieer.py:492`). lieer refuses to push when the remote has moved on:
+**`gmi sync` pushes first, then pulls** (`gmailieer.py:492`). A push onto a
+remote that has moved on is refused:
 
     update: remote has changed, will not update (1914765 > 1914502)
     push: not all changes could be pushed, will re-try at next push.
 
-**A rejected push loses the change.** Measured on the Sherpa side: tag, push
-rejected, then the pull that follows brings the old tag back — and lieer's
-promise to "re-try at next push" is empty, because by then there is nothing left
-locally to retry. So a write is not done when `gmi sync` returns zero: the tag
-has to be read back and the write reissued if it did not stick.
-
-Measured: pull 1.8 s, push 2.2 s.
+and the pull that follows in the same run puts the old tags back — so the
+promise to re-try is empty, because by then there is nothing left locally to
+re-try. Measured: pull 1.8 s, push 2.2 s.
 
 **Two syncs cannot overlap, and the second one says so.** lieer takes an
 exclusive `fcntl` lock on `.lock` in the repository, and `sync`, `pull` and
 `push` all take it without blocking (`local.py`, `load_repository`; only `send`
 waits, which is not our path). A second one exits non-zero at once with
-`failed to lock repository (probably in use by another gmi instance)`. That is
-the shape we want — a timer firing while a write is syncing fails visibly
-instead of queueing up — so the write path should recognise that string and
-retry shortly rather than report it to the user as a failure. The lock is per
-repository, so separate accounts in separate trees still run in parallel.
+`failed to lock repository (probably in use by another gmi instance)`. The lock
+is per repository, so separate accounts in separate trees still run in parallel.
 
 **Never delete `.lock`.** The lock is released when the file descriptor closes,
 so a crashed `gmi` leaves the file but not the lock, and there is nothing to
@@ -98,6 +98,20 @@ not the name, so a new `gmi` simply creates a fresh `.lock` and takes it — and
 then both run at once with no exclusion at all. When a sync looks stuck, check
 whether `rchar` in `/proc/<pid>/io` is still rising; with no progress output,
 that is the only sign of life there is.
+
+**`notmuch new` is not needed:** lieer registers what it fetched itself
+(`local.py:615`). It reads `new.tags` too (`local.py:387`).
+
+## To add
+
+**Scoping the inbox to what lieer actually holds.** `tag:inbox` reaches 31,435
+of the 32,422 messages indexed here, because notmuch's own `new.tags` puts
+`inbox` on everything it imports — the Takeout archive included. So the inbox
+view mixes mail lieer knows about with mail it has never heard of, and
+archiving one of the latter changes a tag that no sync will ever carry
+anywhere. The account wants a query that says which is which, e.g.
+`queries = { inbox = 'tag:inbox and path:lab-lieer/**' }`, or the archive wants
+importing without the tag.
 
 **Reply and forward, assembled here.** `compose.lua` hands `envelope.id` (a
 Message-ID) to `himalaya message reply <id>`, which wants an IMAP UID. This is
