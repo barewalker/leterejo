@@ -81,6 +81,24 @@ has to be read back and the write reissued if it did not stick.
 
 Measured: pull 1.8 s, push 2.2 s.
 
+**Two syncs cannot overlap, and the second one says so.** lieer takes an
+exclusive `fcntl` lock on `.lock` in the repository, and `sync`, `pull` and
+`push` all take it without blocking (`local.py`, `load_repository`; only `send`
+waits, which is not our path). A second one exits non-zero at once with
+`failed to lock repository (probably in use by another gmi instance)`. That is
+the shape we want — a timer firing while a write is syncing fails visibly
+instead of queueing up — so the write path should recognise that string and
+retry shortly rather than report it to the user as a failure. The lock is per
+repository, so separate accounts in separate trees still run in parallel.
+
+**Never delete `.lock`.** The lock is released when the file descriptor closes,
+so a crashed `gmi` leaves the file but not the lock, and there is nothing to
+clean up. Deleting it is actively harmful: a running process holds the inode,
+not the name, so a new `gmi` simply creates a fresh `.lock` and takes it — and
+then both run at once with no exclusion at all. When a sync looks stuck, check
+whether `rchar` in `/proc/<pid>/io` is still rising; with no progress output,
+that is the only sign of life there is.
+
 **Reply and forward, assembled here.** `compose.lua` hands `envelope.id` (a
 Message-ID) to `himalaya message reply <id>`, which wants an IMAP UID. This is
 the same shape as the attachment bug Sherpa hit and fixed
