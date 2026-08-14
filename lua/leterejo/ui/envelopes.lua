@@ -929,8 +929,12 @@ local function setup_keymaps(buf)
     end)
   end
 
-  -- Filtering. Non-ASCII cannot use the server search, so recent envelopes are
-  -- matched locally; the header says which path was taken.
+  -- The two ways in: type one, or pick one. Each offers the other, so which
+  -- key was pressed first does not matter.
+  local filters
+
+  -- Filtering. Everything is answered by the index, except the two markers it
+  -- never saw, which are answered by reading the mailbox back.
   local function search()
     vim.ui.input({
       prompt = lang.t("search_prompt"),
@@ -941,7 +945,15 @@ local function setup_keymaps(buf)
       end
 
       input = vim.trim(input)
-      state.query = input ~= "" and { text = input } or nil
+
+      -- Nothing typed: offer the ones worth having on a key. Someone who
+      -- pressed the filter key and then had nothing in mind is exactly who the
+      -- list is for. Clearing has its own key.
+      if input == "" then
+        return filters()
+      end
+
+      state.query = { text = input }
       state.reset_list()
       M.refresh()
     end)
@@ -956,7 +968,7 @@ local function setup_keymaps(buf)
   -- Two entries are not queries but choices about them.
   local WRITE, CLEAR = "\0write", "\0clear"
 
-  local function filters()
+  filters = function()
     local items, query_of = {}, {}
 
     -- The query is shown as well as described: the description says what it is
