@@ -100,18 +100,32 @@ whether `rchar` in `/proc/<pid>/io` is still rising; with no progress output,
 that is the only sign of life there is.
 
 **`notmuch new` is not needed:** lieer registers what it fetched itself
-(`local.py:615`). It reads `new.tags` too (`local.py:387`).
+(`local.py:615`).
+
+**Empty `new.tags` before the first pull.** lieer reads notmuch's `new.tags`
+and applies it to every file it registers, on top of the labels Gmail gave
+(`local.py:694`). notmuch's default is `unread;inbox`, so a full pull here left
+all 32,415 messages tagged `inbox` and 31,778 tagged `unread` — including 2,335
+in `sent`, which cannot be in the inbox. The list is unusable that way, but the
+real hazard is the push: a message whose local tags include a label Gmail does
+not have offers that label on the next push, so archiving one old message would
+have put it *into* the Gmail inbox and marked it unread.
+
+Emptying `new.tags` only helps the next file. Correcting the ones already
+written takes a second `gmi pull --force`: a partial pull only revisits what
+changed on Gmail, and these had not. On the second pass the files exist, so
+lieer takes the other branch — `tags.clear()`, then exactly the remote labels —
+which is the only thing that reconciles them. It costs metadata alone;
+`get_content` fetches only what is missing.
+
+**One store, or the tags will disagree.** Reading three stores into one index
+(a Takeout export, an mbsync tree, the lieer repository) produced two spellings
+of every nested label — `WORK/Jobcan` from lieer, `WORK.Jobcan` from the
+Maildir-hierarchy import — on the same messages, since notmuch merges by
+Message-ID and tags belong to the message rather than the file. Deleting the
+files does not remove the tags; only a pull that rewrites them does.
 
 ## To add
-
-**Scoping the inbox to what lieer actually holds.** `tag:inbox` reaches 31,435
-of the 32,422 messages indexed here, because notmuch's own `new.tags` puts
-`inbox` on everything it imports — the Takeout archive included. So the inbox
-view mixes mail lieer knows about with mail it has never heard of, and
-archiving one of the latter changes a tag that no sync will ever carry
-anywhere. The account wants a query that says which is which, e.g.
-`queries = { inbox = 'tag:inbox and path:lab-lieer/**' }`, or the archive wants
-importing without the tag.
 
 **Reply and forward, assembled here.** `compose.lua` hands `envelope.id` (a
 Message-ID) to `himalaya message reply <id>`, which wants an IMAP UID. This is
