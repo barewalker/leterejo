@@ -26,6 +26,7 @@ strings.en = {
 
   -- envelope list
   loading = "Loading…",
+  syncing = "Fetching mail…",
   count = "%d messages",
   readonly = "  [read-only]",
   empty = "  (no messages)",
@@ -184,7 +185,7 @@ strings.en = {
   desc_archive = "Archive",
   desc_spam = "Report as spam",
   desc_move = "Move to a mailbox",
-  desc_refresh = "Reload",
+  desc_refresh = "Fetch mail and reload",
   desc_expand = "Open the conversation",
   desc_collapse = "Close the conversation",
   desc_toggle_thread = "Open or close the conversation",
@@ -216,6 +217,7 @@ strings.ja = {
   err_no_lieer_dir = "このアカウントの lieer のメール木が設定されていません",
 
   loading = "読み込み中…",
+  syncing = "メールを取りに行っています…",
   count = "%d 件",
   readonly = "  [読み取り専用]",
   empty = "  (メールがありません)",
@@ -363,7 +365,7 @@ strings.ja = {
   desc_archive = "保管する",
   desc_spam = "迷惑メールとして報告する",
   desc_move = "メールボックスへ移す",
-  desc_refresh = "取り直す",
+  desc_refresh = "メールを取ってきて読み直す",
   desc_expand = "やり取りを開く",
   desc_collapse = "やり取りを閉じる",
   desc_toggle_thread = "やり取りを開く・閉じる",
