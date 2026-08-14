@@ -1,8 +1,8 @@
 # Porting from Sherpa
 
-This tree is Sherpa renamed, nothing more. Sherpa grew around constraints that
-no longer hold, and the point of restarting is to remove what those constraints
-left behind rather than carry it forward.
+This tree began as Sherpa renamed. Sherpa grew around constraints that no longer
+hold, and the point of restarting is to remove what those constraints left
+behind rather than carry it forward.
 
 Delete this file when the list is empty.
 
@@ -20,54 +20,74 @@ Measured on the way here: a list of fifty went 2,100 ms → 37 ms, a body from
 seconds to 10–20 ms, and a full sync from three days on mbsync to about seventy
 minutes on lieer. `design-notes.md` §13 has the numbers.
 
+## Done
+
+**Reading is always the local index.** `cache.lua` is gone, and with it
+`persist_cache` and the draw-then-catch-up dance. So is paging: `page_size`,
+`continuous`, `state.page`, the `(page N)` in the heading and the `]` / `[` keys.
+So is `local_mail` and everything that branched on it — `notmuch.is_local`,
+`cli.can_thread`, and the `"auto"` arms that asked whether reading was local.
+The screen calls notmuch directly, so the read half of `cli.lua` went with it
+(`list_envelopes`, `list_threads`, `read_message`, `fetch_structure`,
+`list_attachments`, `download_attachments`, `list_mailboxes`, `count_envelopes`).
+Filtering no longer has a server-search or a scan-locally path, only the index
+and the two `is:` filters the index cannot answer.
+
+Two smaller ones. `cli.warm_up` is gone: it ran `himalaya account list` before
+the first list to get pinentry out of the way, and `account list` only
+enumerates the configuration — it is unlikely to have read `pass` at all. Now
+that reading never leaves the machine, the only thing reaching for a password is
+sending, which the user asked for and can answer a prompt during. And the compose
+buffer wrote `X-Sherpa-Account:` while sending read `X-Leterejo-Account:`, so the
+header never matched and the account always fell back to the current one.
+
 ## To remove
 
-**`cache.lua`, entirely.** It existed to hide the two seconds himalaya spent
-reconnecting. Callers: `ui/envelopes.lua`, `ui/message.lua`, `actions.lua`,
-`compose.lua`, `init.lua`, `cli.lua`. Also drop `persist_cache` from the
-configuration and the `bypass()` dance inside the module.
+**The IMAP UID.** `notmuch.uid_of`, `cli.resolve_ids`, the `,U=<n>` filename
+parsing and `err_archive_only`. lieer names files `<Gmail id>:2,<flags>`, so
+there is no UID in them to recover — every message would report itself as
+archive-only. Goes together with the write path below, which is what still
+calls it.
 
-**Paging.** `page_size`, `next_page`, `prev_page`, `state.page`,
-`state.reset_page`, the `(page N)` in the heading, and the paged branch of
-`load_page`. A local index has no reason to break at fifty. `list_envelopes`
-takes a page number only because himalaya did.
-
-**The IMAP UID.** `notmuch.uid_of`, `cli.resolve_ids`, and the `,U=<n>` filename
-parsing. lieer names files by the Gmail message id, so there is no UID to
-recover, and none is needed once writing goes through tags.
-
-**`err_archive_only`.** It said a message could be read but not changed, which
-was true only of Takeout mail with no UID. Under lieer every message can be
-changed.
-
-**`local_mail`, and everything that branches on it.** `cli.can_thread`,
-`notmuch.is_local`, and the `"auto"` arms of `continuous`, `threads` and
-`preview` that ask whether reading is local. It always is.
-
-**Most of `cli.lua`.** Reading already goes to notmuch. Once writing goes to
-tags, what remains of the himalaya layer is sending, and `compose.lua` can call
-it directly.
+**What is left of `cli.lua`.** Sending, and `list_accounts` because himalaya's
+configuration is still where accounts are declared. `compose.lua` can call it
+directly.
 
 ## To add
 
-**Writing through tags.** `actions.lua` currently resolves a UID and calls
-`himalaya flag`/`message move`. It should set or clear a notmuch tag and then
+**Writing through tags.** `actions.lua` resolves a UID and calls
+`himalaya flag` / `message move`. It should set or clear a notmuch tag and then
 run `gmi sync`.
 
-The mapping lieer uses (`lieer/local.py`):
+The mapping lieer uses (`lieer/local.py:36`, `translate_labels_default`):
 
     INBOX→inbox  UNREAD→unread  STARRED→flagged  IMPORTANT→important
     SENT→sent  DRAFT→draft  TRASH→trash  SPAM→spam
 
 So: mark read is `-unread`, archive is `-inbox`, trash is `+trash`, spam is
-`+spam`, flag is `+flagged`.
+`+spam`, flag is `+flagged`. `CATEGORY_*` is ignored by default.
 
-**`sync`, not `push`.** lieer refuses to push when the remote has moved on:
+**`sync`, not `push`.** `gmi sync` pushes first and then pulls
+(`gmailieer.py:492`). lieer refuses to push when the remote has moved on:
 
     update: remote has changed, will not update (1914765 > 1914502)
+    push: not all changes could be pushed, will re-try at next push.
 
-That is a correct conflict guard, and it means the write path must pull first.
-`gmi sync` does both. Measured: pull 1.8 s, push 2.2 s.
+**A rejected push loses the change.** Measured on the Sherpa side: tag, push
+rejected, then the pull that follows brings the old tag back — and lieer's
+promise to "re-try at next push" is empty, because by then there is nothing left
+locally to retry. So a write is not done when `gmi sync` returns zero: the tag
+has to be read back and the write reissued if it did not stick.
+
+Measured: pull 1.8 s, push 2.2 s.
+
+**Reply and forward, assembled here.** `compose.lua` hands `envelope.id` (a
+Message-ID) to `himalaya message reply <id>`, which wants an IMAP UID. This is
+the same shape as the attachment bug Sherpa hit and fixed
+(`sherpa: Invalid message UID '004d01dc74a2$...'`), so reply and forward have
+been broken for local reading and simply went unused. Under lieer they need no
+UID at all: the original is in the index, so the quote, `In-Reply-To` and
+`References` can be built here and handed to `message compose --send`.
 
 **A timer.** Nothing fetches mail on its own yet, which is why new mail did not
 appear. lieer holds an OAuth token in a file and never touches gpg, so unlike
@@ -75,7 +95,13 @@ mbsync it can run unattended — this is what §6-1 of the design notes was
 blocked on.
 
 Set `gmi set --timeout 60` first. The default is 600, and a stalled request
-hangs silently for ten minutes; that happened here.
+hangs silently for ten minutes; that happened here. Note also that lieer prints
+no progress when its output is not a terminal, so a timer cannot tell a running
+sync from a stuck one by reading it, and that `--limit` cannot be combined with
+removing local messages — run it with `--no-remove-local-messages`.
+
+`notmuch new` is not needed: lieer registers what it fetched itself
+(`local.py:615`).
 
 ## To keep
 

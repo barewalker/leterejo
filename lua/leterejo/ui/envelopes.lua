@@ -5,14 +5,12 @@
 -- the cursor.
 --
 -- The list grows as the cursor nears its end rather than breaking into pages.
--- Paging only ever existed because a fetch over IMAP costs seconds; reading
--- from a local index costs tens of milliseconds, so there is nothing left to
--- ration. Accounts still read over IMAP keep the pages.
-local cache = require("leterejo.cache")
-local cli = require("leterejo.cli")
+-- Paging only ever existed because a fetch over IMAP cost seconds; the index
+-- answers a batch in tens of milliseconds, so there is nothing left to ration.
 local config = require("leterejo.config")
 local hl = require("leterejo.ui.highlight")
 local lang = require("leterejo.lang")
+local notmuch = require("leterejo.notmuch")
 local state = require("leterejo.state")
 local util = require("leterejo.ui.util")
 
@@ -45,35 +43,24 @@ end
 -- and folding them into conversations would hide the very rows the user asked
 -- for behind a collapsed parent.
 local function threaded()
-  if state.query or config.options.threads == false then
-    return false
-  end
-  return cli.can_thread(state.account)
+  return not (state.query or config.options.threads == false)
 end
 
--- Whether the list grows on scroll instead of paging.
+-- Whether more rows can be asked for as the cursor nears the end.
 --
--- A filtered list follows the same rule, but asks the search whether its result
--- can be read a batch at a time: a server-side search returns one fixed batch
--- and cannot be resumed at an offset.
-local function continuous()
+-- A plain list always can. A filtered one asks the search: a query the index
+-- answers resumes at an offset, but a scan already read as far as it was going
+-- to and has nothing left to hand over.
+local function growable()
   if state.query then
-    return require("leterejo.search").can_page(state.account, state.query.text)
+    return require("leterejo.search").resumable(state.query.text)
   end
-
-  local mode = config.options.continuous
-  if mode == true or mode == false then
-    return mode
-  end
-  return cli.can_thread(state.account)
+  return true
 end
 
 -- Where the body of the row under the cursor is kept on screen, if anywhere.
 --
 -- Returns "below", "right", or nil for no preview.
---
--- Following the cursor over IMAP would mean a two-second fetch per row, so this
--- is for local reading only.
 --
 -- "auto" measures the pane rather than the terminal. Inside herdr or tmux the
 -- editor occupies whatever the pane gives it, and that is what decides whether
@@ -85,9 +72,6 @@ local function preview_where()
   local mode = config.options.preview
   if mode == false then
     return nil
-  end
-  if not cli.can_thread(state.account) then
-    return nil -- the same test as "reads from the local index"
   end
   if mode == "below" or mode == "right" then
     return mode
@@ -176,15 +160,13 @@ local function render_header()
     b.add(lang.t("count", #state.envelopes), "LeterejoHeaderCount")
   end
 
-  -- While filtering, state the reach as well as the query. A local filter only
-  -- saw a recent slice, and hiding that invites misreading the result.
+  -- While filtering, state the reach as well as the query. A scan only saw a
+  -- recent slice, and hiding that invites misreading the result.
   if state.query then
     local scope
     if state.query.index then
       -- notmuch covers every indexed message, so there is no slice to warn about.
       scope = lang.t("scope_index")
-    elseif state.query.server then
-      scope = lang.t("scope_server")
     else
       scope = lang.t("scope_local", state.query.scanned or 0)
     end
@@ -198,8 +180,6 @@ local function render_header()
       ),
       "LeterejoHeaderNote"
     )
-  elseif not continuous() then
-    b.add("  (" .. lang.t("page", state.page) .. ")", "LeterejoHeaderNote")
   end
 
   if state.is_readonly() then
@@ -328,7 +308,7 @@ local function redraw(buf)
     push("  " .. lang.t("loading"), { { 0, 64, "LeterejoEmpty" } })
   elseif #state.envelopes == 0 then
     push(lang.t("empty"), { { 0, 64, "LeterejoEmpty" } })
-  elseif continuous() then
+  elseif growable() then
     if state.loading then
       push(lang.t("loading_more"), { { 0, 64, "LeterejoMore" } })
     elseif state.total and state.loaded >= state.total then
@@ -462,16 +442,17 @@ local function fetch_batch(account, mailbox, offset, limit, on_done)
       end
     )
   end
+  local query = notmuch.query_for(account, mailbox)
   if threaded() then
-    return cli.list_threads(account, mailbox, offset, limit, on_done)
+    return notmuch.list_threads(query, offset, limit, on_done)
   end
-  return cli.list_envelopes_at(account, mailbox, offset, limit, on_done)
+  return notmuch.list_at(query, offset, limit, on_done)
 end
 
 -- Ask for the next batch. Guarded so a burst of cursor movement cannot start
 -- several fetches for the same rows.
 local function load_more(buf)
-  if state.loading or not continuous() then
+  if state.loading or not growable() then
     return
   end
   if state.total and state.loaded >= state.total then
@@ -516,7 +497,7 @@ local function load_more(buf)
   end)
 end
 
--- Start a continuous list from nothing.
+-- Start the list from nothing.
 local function load_first(buf)
   local account, mailbox = state.account, state.mailbox
 
@@ -534,7 +515,7 @@ local function load_first(buf)
   -- A filter started while this was out would otherwise be labelled with the
   -- whole mailbox's total: the count is slow enough (a second, on a large
   -- mailbox) for that to be an ordinary sequence of keystrokes, not a race.
-  cli.count_envelopes(account, mailbox, threaded(), function(ok, total)
+  notmuch.count(notmuch.query_for(account, mailbox), threaded(), function(ok, total)
     if ok and state.account == account and state.mailbox == mailbox and not state.query then
       state.total = total
       redraw_in_place(buf)
@@ -573,40 +554,6 @@ local function load_first(buf)
     -- Nothing has moved the cursor, so the preview has had no reason to fire.
     place_cursor(buf)
     M.preview()
-  end)
-end
-
--- One page, the old way, for accounts that read over IMAP.
-local function load_page(buf)
-  local account, mailbox, page = state.account, state.mailbox, state.page
-
-  local page_size = config.options.page_size
-  if not page_size then
-    -- Fetch what fits the window, minus the header rows.
-    page_size = math.max(5, vim.api.nvim_win_get_height(0) - header_height() - 1)
-  end
-
-  local cached = cache.get_envelopes(account, mailbox, page)
-  state.envelopes = cached or nil
-  redraw(buf)
-
-  cli.list_envelopes(account, mailbox, page, page_size, function(ok, res)
-    if not ok then
-      -- With remembered contents on screen, just report and keep them.
-      return vim.notify(lang.t("prefix") .. res, vim.log.levels.ERROR)
-    end
-
-    cache.set_envelopes(account, mailbox, page, res)
-
-    if state.account ~= account or state.mailbox ~= mailbox or state.page ~= page then
-      return
-    end
-    if cached and not cache.envelopes_differ(cached, res) then
-      return
-    end
-
-    state.envelopes = res
-    redraw_in_place(buf)
   end)
 end
 
@@ -649,7 +596,6 @@ local function load_search(buf)
     end
 
     state.query.index = info and info.index
-    state.query.server = info and info.server
     state.query.scanned = info and info.scanned
     state.envelopes = res
     state.loaded = #res
@@ -659,8 +605,8 @@ end
 
 -- Redraw from what is already held, without fetching anything.
 --
--- Used after an operation that changed a message: a refetch over IMAP spends
--- seconds, so the row is corrected in place and the screen answers at once.
+-- Used after an operation that changed a message: the row is corrected in place
+-- so the screen answers at once, and the next refetch confirms it.
 function M.redraw()
   local buf = find_buf()
   if buf then
@@ -678,10 +624,7 @@ function M.refresh()
   if state.query then
     return load_search(buf)
   end
-  if continuous() then
-    return load_first(buf)
-  end
-  return load_page(buf)
+  return load_first(buf)
 end
 
 -- The preview ------------------------------------------------------------------
@@ -872,7 +815,7 @@ local function expand_thread()
   local account, thread = state.account, e.thread
   vim.notify(lang.t("thread_loading"), vim.log.levels.INFO)
 
-  cli.thread_messages(account, thread, function(ok, msgs)
+  notmuch.thread_messages(thread, function(ok, msgs)
     if not ok then
       return vim.notify(lang.t("prefix") .. tostring(msgs), vim.log.levels.ERROR)
     end
@@ -898,9 +841,9 @@ end
 -- Keys ------------------------------------------------------------------------
 
 local function setup_keymaps(buf)
-  -- Attachments are reachable from the list too, without opening the body. The
-  -- attachment list is not known here, so ask for just the structure — cheaper
-  -- than downloading the message.
+  -- Attachments are reachable from the list too, without opening the body:
+  -- notmuch already parsed the MIME tree when it indexed the file, so asking
+  -- what a message carries costs nothing.
   local function attachments()
     local e = envelope_under_cursor()
     if not e then
@@ -911,15 +854,15 @@ local function setup_keymaps(buf)
       return vim.notify(lang.e("no_attachments"), vim.log.levels.INFO)
     end
 
-    local account, mailbox, id = state.account, state.mailbox, e.id
+    local id = e.id
     vim.notify(lang.t("checking_attachments"), vim.log.levels.INFO)
 
-    cli.list_attachments(account, mailbox, id, function(ok, atts)
+    notmuch.attachments(id, function(ok, atts)
       if not ok then
         return vim.notify(lang.t("prefix") .. tostring(atts), vim.log.levels.ERROR)
       end
 
-      require("leterejo.attachments").download_and_open(account, mailbox, id, atts or {})
+      require("leterejo.attachments").download_and_open(id, atts or {})
     end)
   end
 
@@ -936,7 +879,7 @@ local function setup_keymaps(buf)
 
       input = vim.trim(input)
       state.query = input ~= "" and { text = input } or nil
-      state.reset_page()
+      state.reset_list()
       M.refresh()
     end)
   end
@@ -979,26 +922,6 @@ local function setup_keymaps(buf)
         require("leterejo.ui.help").open("envelopes")
       end,
     },
-    next_page = {
-      desc = lang.t("desc_next_page"),
-      handler = function()
-        if continuous() then
-          return
-        end
-        state.page = state.page + 1
-        M.refresh()
-      end,
-    },
-    prev_page = {
-      desc = lang.t("desc_prev_page"),
-      handler = function()
-        if continuous() or state.page <= 1 then
-          return
-        end
-        state.page = state.page - 1
-        M.refresh()
-      end,
-    },
     attachments = { desc = lang.t("desc_attachments"), handler = attachments },
     toggle_seen = { desc = lang.t("desc_toggle_seen"), handler = act("toggle_seen") },
     toggle_flagged = { desc = lang.t("desc_toggle_flagged"), handler = act("toggle_flagged") },
@@ -1024,7 +947,7 @@ local function setup_keymaps(buf)
       handler = function()
         if state.query then
           state.query = nil
-          state.reset_page()
+          state.reset_list()
           M.refresh()
         end
       end,
@@ -1032,8 +955,7 @@ local function setup_keymaps(buf)
     refresh = {
       desc = lang.t("desc_refresh"),
       handler = function()
-        cache.clear()
-        state.reset_page()
+        state.reset_list()
         M.refresh()
       end,
     },
@@ -1115,7 +1037,7 @@ local function watch_cursor(buf)
     group = group,
     desc = "leterejo: extend the list as it is scrolled",
     callback = function()
-      if not continuous() then
+      if not growable() then
         return
       end
 
@@ -1158,8 +1080,8 @@ function M.open()
   vim.wo.relativenumber = false
   vim.wo.cursorline = true
 
-  -- Do not draw here. refresh() draws after consulting the cache; drawing an
-  -- empty state first would flash "no messages".
+  -- Do not draw here. refresh() draws "loading" itself, and drawing an empty
+  -- state first would flash "no messages".
   M.refresh()
 end
 

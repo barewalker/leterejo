@@ -1,12 +1,11 @@
 -- The message body buffer.
 --
--- himalaya's `message read` returns the body alone and says nothing about
--- attachments, so the MIME structure is fetched alongside it and listed above
--- the body. Both run asynchronously, so the wait is the slower one (the body).
-local cache = require("leterejo.cache")
-local cli = require("leterejo.cli")
+-- The body and the list of attachments are two separate questions for notmuch,
+-- so both are asked at once and the slower one sets the wait. Neither costs
+-- more than tens of milliseconds.
 local config = require("leterejo.config")
 local lang = require("leterejo.lang")
+local notmuch = require("leterejo.notmuch")
 local state = require("leterejo.state")
 local util = require("leterejo.ui.util")
 
@@ -214,7 +213,7 @@ local function download()
     return vim.notify(lang.e("no_message_shown"), vim.log.levels.WARN)
   end
 
-  require("leterejo.attachments").download_and_open(m.account, m.mailbox, m.id, m.attachments or {})
+  require("leterejo.attachments").download_and_open(m.id, m.attachments or {})
 end
 
 local function setup_keymaps(buf)
@@ -421,8 +420,6 @@ end
 
 -- Open the body of an envelope.
 --
--- Bodies are remembered once read. Unlike the list they never change, so no
--- background refetch is needed.
 --   opts.focus  : move into the body window afterwards (true by default)
 --   opts.ratio  : height of the split when it has to be made
 --   opts.quiet  : do not announce the fetch (for a preview that follows the
@@ -438,29 +435,12 @@ function M.open(envelope, opts)
     return opts.token ~= nil and opts.token ~= state.preview_token
   end
 
-  local hit = cache.get_message(account, mailbox, id)
-  if hit then
-    if stale() then
-      return
-    end
-    state.current_message = {
-      account = account,
-      mailbox = mailbox,
-      id = id,
-      body = hit.body,
-      attachments = hit.attachments,
-      folded = config.options.fold_headers,
-    }
-    return M.render(state.current_message, opts)
-  end
-
   if not opts.quiet then
     local subject = util.strip_invisible(envelope.subject or "")
     vim.notify(lang.t("reading", subject), vim.log.levels.INFO)
   end
 
-  -- Fetch body and structure together; the structure is lighter, so the
-  -- body sets the wait.
+  -- Ask for the body and the attachment list together; the body sets the wait.
   local body, attachments
   local body_done, struct_done = false, false
 
@@ -473,7 +453,6 @@ function M.open(envelope, opts)
     end
 
     attachments = attachments or {}
-    cache.set_message(account, mailbox, id, { body = body, attachments = attachments })
 
     if stale() then
       return
@@ -490,7 +469,7 @@ function M.open(envelope, opts)
     M.render(state.current_message, opts)
   end
 
-  cli.read_message(account, mailbox, id, function(ok, out)
+  notmuch.read(id, function(ok, out)
     if ok then
       body = out
     elseif not opts.quiet then
@@ -500,7 +479,7 @@ function M.open(envelope, opts)
     finish()
   end)
 
-  cli.list_attachments(account, mailbox, id, function(ok, atts)
+  notmuch.attachments(id, function(ok, atts)
     -- Show the body even without the list; only the attachments are missing,
     -- which is a small loss.
     attachments = ok and atts or {}

@@ -1,10 +1,10 @@
 -- `:checkhealth leterejo`
 --
--- This plugin is a front end to programs it does not ship, and which of them
--- are needed depends on how the accounts are configured: notmuch only matters
--- once an account reads locally, w3m only once mail arrives as HTML. Rather
--- than list requirements in a README and hope, the check reports what this
--- configuration actually needs and what is actually there.
+-- This plugin is a front end to programs it does not ship. notmuch is what it
+-- reads from and cannot work without; the rest depends on how things are set up
+-- here — w3m only matters once mail arrives as HTML. Rather than list
+-- requirements in a README and hope, the check reports what this configuration
+-- actually needs and what is actually there.
 --
 -- Nothing here touches an account. Asking himalaya to list mailboxes would make
 -- it read a password out of pass, and a cold gpg-agent would seize the terminal
@@ -43,12 +43,12 @@ end
 -- himalaya --------------------------------------------------------------------
 
 local function check_himalaya(config)
-  vim.health.start("leterejo: himalaya (required)")
+  vim.health.start("leterejo: himalaya (sending)")
 
   local exe = config.options.executable or "himalaya"
   if vim.fn.executable(exe) ~= 1 then
     return vim.health.error("`" .. exe .. "` not found on PATH", {
-      "himalaya sends mail and performs every change of state.",
+      "himalaya sends mail. Reading does not go through it.",
       "https://github.com/pimalaya/himalaya",
       "Set `executable` if it is installed under another name or path.",
     })
@@ -70,34 +70,17 @@ end
 
 -- notmuch ---------------------------------------------------------------------
 
--- The accounts that were told to read from the local index.
-local function local_accounts(config)
-  local names = {}
-  for name, account in pairs(config.options.accounts or {}) do
-    if account.local_mail == true then
-      table.insert(names, name)
-    end
-  end
-  table.sort(names)
-  return names
-end
-
 local function check_notmuch(config)
-  local locals = local_accounts(config)
-
-  vim.health.start("leterejo: notmuch (local reading)")
-
-  if #locals == 0 then
-    return vim.health.ok("No account sets `local_mail`, so notmuch is not used")
-  end
+  vim.health.start("leterejo: notmuch (required)")
 
   local opts = config.options.notmuch or {}
   local exe = opts.executable or "notmuch"
 
   if vim.fn.executable(exe) ~= 1 then
-    return vim.health.error("`" .. exe .. "` not found, but these accounts read locally: "
-      .. table.concat(locals, ", "), {
-      "Install notmuch, or drop `local_mail` from those accounts to read over IMAP.",
+    return vim.health.error("`" .. exe .. "` not found on PATH", {
+      "Everything this plugin shows is read from the notmuch index.",
+      "Nothing will be listed until it is installed and `notmuch new` has run.",
+      "Set `notmuch.executable` if it is installed under another name or path.",
     })
   end
 
@@ -315,7 +298,7 @@ local function check_config(config)
   local accounts = config.options.accounts or {}
   if vim.tbl_isempty(accounts) then
     vim.health.warn("No accounts configured", {
-      "Reading works from himalaya's own config, but sending needs an address:",
+      "Reading works without this, but sending needs an address:",
       "himalaya v2 does not fill From by itself.",
       'accounts = { work = { email = "you@work.example" } }',
     })
@@ -325,9 +308,6 @@ local function check_config(config)
     for _, name in ipairs(names) do
       local a = accounts[name]
       local notes = {}
-      if a.local_mail then
-        table.insert(notes, "local index")
-      end
       if a.readonly then
         table.insert(notes, "read-only")
       end

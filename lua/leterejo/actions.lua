@@ -7,7 +7,6 @@
 -- himalaya v2 spends seconds on each command, so the outcome is written into
 -- the envelope we already hold and drawn straight away rather than waiting for
 -- another list fetch. The next refetch confirms it.
-local cache = require("leterejo.cache")
 local cli = require("leterejo.cli")
 local config = require("leterejo.config")
 local lang = require("leterejo.lang")
@@ -35,8 +34,8 @@ end
 
 -- Whether we are still looking at what the operation was issued against.
 -- Moving elsewhere mid-flight must not rewrite the list now on screen.
-local function still_here(account, mailbox, page)
-  return state.account == account and state.mailbox == mailbox and state.page == page
+local function still_here(account, mailbox)
+  return state.account == account and state.mailbox == mailbox
 end
 
 -- Record a flag change on the envelope in hand.
@@ -83,20 +82,6 @@ local function forget_locally(envelope)
   return removed
 end
 
--- Keep what is remembered in step with what we just changed.
---
--- While listing normally, state.envelopes is the very table the cache holds,
--- so the edit is already in it and storing it again only schedules the write
--- to disk. While filtering the list is a separate search result, leaving the
--- cached pages with the old contents, so those have to go.
-local function remember(account, mailbox, page)
-  if state.query then
-    cache.invalidate_mailbox(account, mailbox)
-  else
-    cache.set_envelopes(account, mailbox, page, state.envelopes or {})
-  end
-end
-
 -- Flags --------------------------------------------------------------------
 
 -- Add or remove one flag, whichever the message is not already.
@@ -105,7 +90,7 @@ local function toggle_flag(envelope, flag, on_key, off_key)
     return
   end
 
-  local account, mailbox, page = state.account, state.mailbox, state.page
+  local account, mailbox = state.account, state.mailbox
   local set = util.has_flag(envelope, flag)
   local call = set and cli.remove_flags or cli.add_flags
 
@@ -115,12 +100,11 @@ local function toggle_flag(envelope, flag, on_key, off_key)
     end
 
     -- The envelope is the same object either way, so the flag is worth
-    -- recording even if we have moved on; only the screen and the cache
-    -- belong to where we were.
+    -- recording even if we have moved on; only the screen belongs to where
+    -- we were.
     set_flag_locally(envelope, flag, not set)
 
-    if still_here(account, mailbox, page) then
-      remember(account, mailbox, page)
+    if still_here(account, mailbox) then
       redraw()
     end
 
@@ -156,7 +140,7 @@ function M.move_to(envelope, dest, after)
     return vim.notify(lang.e("already_there", dest), vim.log.levels.WARN)
   end
 
-  local account, mailbox, page = state.account, state.mailbox, state.page
+  local account, mailbox = state.account, state.mailbox
 
   vim.notify(lang.t("moving", dest), vim.log.levels.INFO)
 
@@ -165,13 +149,9 @@ function M.move_to(envelope, dest, after)
       return err(res)
     end
 
-    -- The destination gained a message, so whatever we remember of it is
-    -- now short one. The source is corrected in place instead, which keeps
-    -- the list on screen instant.
-    cache.invalidate_mailbox(account, dest)
-
-    if still_here(account, mailbox, page) and forget_locally(envelope) then
-      remember(account, mailbox, page)
+    -- Take the row off the screen rather than refetch the list for one
+    -- message; the next refetch confirms it.
+    if still_here(account, mailbox) and forget_locally(envelope) then
       redraw()
     end
 

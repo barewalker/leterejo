@@ -2,9 +2,9 @@
 --
 -- How to open is the user's choice: handlers are listed per MIME type, and
 -- more than one prompts for a pick. A single handler runs directly.
-local cli = require("leterejo.cli")
 local config = require("leterejo.config")
 local lang = require("leterejo.lang")
+local notmuch = require("leterejo.notmuch")
 local util = require("leterejo.ui.util")
 
 local M = {}
@@ -226,17 +226,17 @@ end
 
 -- Save the attachments, then open them.
 --
--- himalaya's `attachment download` reports where each file actually landed
--- (appending "(1)" when a name is taken). Always open the returned path; never
--- a path assembled by guessing.
-function M.download_and_open(account, mailbox, id, attachments)
+-- The reply carries where each file actually landed, since a name already taken
+-- gets a "(1)" appended. Always open the returned path; never a path assembled
+-- by guessing.
+function M.download_and_open(id, attachments)
   if #attachments == 0 then
     return vim.notify(lang.e("no_attachments"), vim.log.levels.INFO)
   end
 
   vim.notify(lang.t("downloading", #attachments), vim.log.levels.INFO)
 
-  cli.download_attachments(account, mailbox, id, config.options.download_dir, function(ok, res)
+  notmuch.save_attachments(id, config.options.download_dir, function(ok, res)
     if not ok then
       return vim.notify(lang.t("prefix") .. res, vim.log.levels.ERROR)
     end

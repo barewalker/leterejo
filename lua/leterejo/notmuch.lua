@@ -1,11 +1,11 @@
--- The notmuch call layer, used for everything that reads.
+-- The notmuch call layer. Everything that reads comes through here.
 --
--- notmuch answers from a local index, so a page costs tens of milliseconds
--- instead of the two seconds an IMAP round trip takes. Nothing here talks to
--- the network.
+-- notmuch answers from a local index, so a batch of fifty costs tens of
+-- milliseconds instead of the two seconds an IMAP round trip took. Nothing here
+-- talks to the network: what the index holds is what a sync put there.
 --
--- Envelopes are handed back in the same shape himalaya produces, so the screen
--- code does not need to know which layer served it.
+-- The envelope shape below is the one the screen draws from — it began as
+-- himalaya's, and stayed because there was no reason to change it.
 --
 -- Japanese search only works when the index was built with XAPIAN_CJK_NGRAM=1,
 -- and the same variable has to be set when querying: without it a run of
@@ -162,17 +162,13 @@ local function id_query(id)
   return 'id:"' .. tostring(id):gsub('"', '\\"') .. '"'
 end
 
--- Fetch one page of envelopes for a query, newest first.
+-- Fetch a run of envelopes for a query, newest first, starting at an offset.
 --
 -- Two calls: the first settles which messages and in what order, the second
 -- fetches their headers. `show` groups by thread and would otherwise lose the
 -- ordering, so the result is put back in the order the search returned.
-function M.list(query, page, page_size, on_done)
-  local size = page_size or 50
-  return M.list_at(query, ((page or 1) - 1) * size, size, on_done)
-end
-
--- The same, addressed by offset rather than page number. A continuous list
+--
+-- Addressed by offset rather than by page: the list grows as it is scrolled and
 -- knows how many rows it holds, not which page it is on.
 function M.list_at(query, offset, size, on_done)
   offset = offset or 0
@@ -768,12 +764,6 @@ function M.uid_of(id, on_done)
     -- Found the message but no UID in any of its file names: it is archive-only.
     on_done(false, lang.t(seen and "err_archive_only" or "err_notmuch"))
   end)
-end
-
--- Whether an account reads from the local index rather than over IMAP.
-function M.is_local(account)
-  local a = (config.options.accounts or {})[account] or {}
-  return a.local_mail == true
 end
 
 -- Names this plugin uses for mailboxes, mapped to the directories a sync tool

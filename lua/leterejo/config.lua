@@ -7,27 +7,18 @@ M.defaults = {
   lang = "en",
 
   -- The himalaya executable; a bare name is fine when it is on PATH.
+  -- Only writing goes through it: reading comes from the notmuch index.
   executable = "himalaya",
 
   -- Account to open with. nil uses himalaya's default (default = true).
   account = nil,
 
-  -- Messages per page, for accounts that page. nil fits the window height.
-  page_size = nil,
-
-  -- One long list instead of pages.
+  -- How many rows to add per batch while scrolling the list.
   --
-  -- Paging exists because a fetch over IMAP costs seconds; reading from a local
-  -- index costs tens of milliseconds, so there is nothing to ration and the
-  -- break at fifty is just an interruption. Rows are added as the cursor nears
-  -- the end.
-  --
-  --   "auto"  continuous where reading is local, paged over IMAP
-  --   true    always continuous, including over IMAP (a fetch stalls the scroll)
-  --   false   always paged
-  continuous = "auto",
-
-  -- How many rows to add per batch while scrolling a continuous list.
+  -- The list is one continuous run rather than pages. Paging only ever existed
+  -- because a fetch over IMAP cost seconds; from the index a batch costs tens
+  -- of milliseconds, so there is nothing to ration and a break at fifty is just
+  -- an interruption. Rows are added as the cursor nears the end.
   chunk_size = 200,
 
   -- How close to the end the cursor has to come before the next batch is asked
@@ -40,13 +31,13 @@ M.defaults = {
   -- so replying or archiving from it behaves as expected. Expanding fetches the
   -- thread's messages, which is why it happens on a key rather than up front.
   --
-  --   "auto"  threads where reading is local, flat over IMAP
-  --   true    always threads (needs a local index; ignored otherwise)
+  --   true    one row per conversation
   --   false   one row per message
   --
-  -- Only the local index can do this: himalaya's envelope list has no notion of
-  -- a thread, so an IMAP account stays flat whatever this says.
-  threads = "auto",
+  -- A filtered list is always flat: a search result is the set of messages that
+  -- matched, and folding them into conversations would hide the very rows the
+  -- user asked for behind a collapsed parent.
+  threads = true,
 
   -- Glyphs for the thread column. ASCII by default on purpose: the obvious
   -- alternatives (▸ ▾ ├ └) are East Asian Ambiguous, so they occupy one cell or
@@ -65,9 +56,6 @@ M.defaults = {
   --                to drop yourself from a reply-all. himalaya's
   --                `account list` does not report addresses, so it goes here
   --   readonly   : refuse every operation that would modify mail
-  --   local_mail : read from the local notmuch index instead of over IMAP.
-  --                Writing still goes over IMAP, so the account keeps its
-  --                himalaya imap block. See the notmuch table further down
   --   folders    : mailbox name -> the directory a sync tool actually made,
   --                e.g. { inbox = "gmail/INBOX" }
   --   queries    : mailbox name -> a notmuch query, for views that are not one
@@ -106,10 +94,10 @@ M.defaults = {
 
   -- How long to wait for one himalaya command (milliseconds).
   -- v2 renegotiates TCP+TLS+SASL every time, so a short limit fails healthy
-  -- calls. Filtering runs longer than listing, hence the headroom.
+  -- calls. Nothing on the reading path waits on this any more.
   timeout = 60000,
 
-  -- Where to save attachments. nil defers to himalaya's downloads-dir.
+  -- Where to save attachments. nil saves to ~/Downloads.
   download_dir = nil,
 
   -- Draw images the message carries, in the message itself.
@@ -127,12 +115,11 @@ M.defaults = {
   -- and push the text it belongs to off the bottom.
   inline_image_max_height = 12,
 
-  -- Reading from a local notmuch index instead of over IMAP.
+  -- The local notmuch index, which is where everything is read from.
   --
-  -- An account opts in with `local_mail = true` in the accounts table above.
-  -- Everything that reads (list, body, attachments, search) then goes to
-  -- notmuch, which answers in tens of milliseconds; writing still goes over
-  -- IMAP through himalaya.
+  -- The list, bodies, attachments and filtering all come from here, in tens of
+  -- milliseconds. Nothing on this path touches the network: what the index
+  -- holds is whatever the sync last put there.
   --
   -- XAPIAN_CJK_NGRAM=1 is always passed. Japanese search needs it at query
   -- time as well as when the index is built, and without it a word inside a
@@ -181,8 +168,6 @@ M.defaults = {
       collapse = "h",
       toggle_thread = "<tab>",
       help = "?", -- list the keys
-      next_page = "]", -- next page (paged lists only)
-      prev_page = "[", -- previous page (paged lists only)
       close = "q",
     },
 
@@ -225,9 +210,9 @@ M.defaults = {
 
   -- Keep the body of the row under the cursor on screen beside the list.
   --
-  -- Only worth it when reading is local: following the cursor over IMAP would
-  -- mean a two-second fetch per row. From the index a body costs tens of
-  -- milliseconds, so it can simply be there.
+  -- A body costs tens of milliseconds from the index, so it can simply be
+  -- there. Following the cursor over IMAP would have meant a two-second fetch
+  -- per row, which is why this could not exist before.
   --
   --   "auto"    pick by the shape of the pane (below)
   --   "below"   list on top, body underneath
@@ -278,31 +263,12 @@ M.defaults = {
   -- e.g. { work = "you@work.example" }
   auto_bcc = {},
 
-  -- How many envelopes to scan when filtering locally.
-  --
-  -- Non-ASCII queries cannot use the server search (a himalaya v2 limit), so
-  -- this many envelopes are fetched and matched here. 500 takes about three
-  -- seconds, barely more than 100: the connection dominates.
   -- How many envelopes `is:suspicious` reads back to look at.
   --
   -- The suspicion mark is computed while drawing, not indexed, so there is no
   -- query for it — the mailbox has to be read and examined. The header reports
   -- how many were seen, so a capped answer does not read as a complete one.
   suspicious_scan_limit = 5000,
-
-  search_limit = 500,
-
-  -- How many messages a server-side search may return.
-  --
-  -- `envelope search` collects matching UIDs and then fetches them one by one,
-  -- which turns pathological when many match (40 s for 500, against 3 s for
-  -- the same 500 through `envelope list`). Keep this small.
-  server_search_limit = 100,
-
-  -- Whether to persist the list across sessions.
-  -- With it on, a fresh Neovim shows the list without waiting.
-  -- Stored at stdpath("cache")/leterejo/envelopes.json.
-  persist_cache = true,
 
   -- Whether to fold headers down to the interesting ones when opening a body.
   -- Dozens of Received: lines otherwise push the body off the screen.
