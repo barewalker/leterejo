@@ -89,6 +89,15 @@ strings.en = {
 
   -- compose
   no_draft = "No draft in progress",
+  draft_saved = "Draft saved: %s",
+  draft_none = "No saved drafts",
+  draft_failed = "Could not write the draft: %s",
+  draft_unreadable = "Could not read the draft: %s",
+  draft_here_only = "Drafts are kept on this machine, not on the server",
+  draft_uploading = "Filing a copy in %s on `%s`…",
+  draft_uploaded = "A copy is now in %s",
+  draft_upload_failed = "Could not file the draft",
+  no_draft_mailbox = "No draft mailbox is set for account `%s` (set `draft_mailbox`)",
   to_empty = "To is empty",
   body_empty = "Body is empty",
   no_email_configured = "No email configured for account `%s`",
@@ -127,6 +136,7 @@ strings.en = {
   pick_mailbox = "Mailbox",
   pick_move_target = "Move to",
   pick_account = "Account",
+  pick_draft = "Draft",
   search_prompt = "Filter: ",
 
   -- key hints (kept short; they share one line)
@@ -145,6 +155,7 @@ strings.en = {
   hint_spam = "spam",
   hint_move = "move",
   hint_refresh = "reload",
+  hint_drafts = "drafts",
   hint_close = "close",
   hint_headers = "headers",
   hint_back = "back",
@@ -176,6 +187,9 @@ strings.en = {
   desc_toggle_headers = "Toggle headers",
   desc_toggle_wrap = "Wrap long lines, or not",
   desc_send = "Send",
+  desc_save_draft = "Save the draft",
+  desc_upload_draft = "File the draft on the server",
+  desc_drafts = "Open a saved draft",
   desc_discard = "Discard",
 }
 
@@ -251,6 +265,15 @@ strings.ja = {
   tmux_outside = "tmux の中で動いていません",
 
   no_draft = "書きかけのメールがありません",
+  draft_saved = "下書きを保存しました: %s",
+  draft_none = "保存した下書きはありません",
+  draft_failed = "下書きを書き出せませんでした: %s",
+  draft_unreadable = "下書きを読めませんでした: %s",
+  draft_here_only = "下書きはこの機械の中だけに置かれます (サーバには上がりません)",
+  draft_uploading = "%s (`%s`) に控えを置いています…",
+  draft_uploaded = "%s に控えを置きました",
+  draft_upload_failed = "下書きを置けませんでした",
+  no_draft_mailbox = "アカウント `%s` の下書き用メールボックスが設定されていません (`draft_mailbox`)",
   to_empty = "宛先 (To) が空です",
   body_empty = "本文が空です",
   no_email_configured = "アカウント `%s` の email が設定されていません",
@@ -287,6 +310,7 @@ strings.ja = {
   pick_mailbox = "メールボックス",
   pick_move_target = "移す先",
   pick_account = "アカウント",
+  pick_draft = "下書き",
   search_prompt = "絞り込み: ",
 
   hint_read = "開く",
@@ -304,6 +328,7 @@ strings.ja = {
   hint_spam = "迷惑",
   hint_move = "移動",
   hint_refresh = "更新",
+  hint_drafts = "下書き",
   hint_close = "閉じる",
   hint_headers = "ヘッダー",
   hint_back = "戻る",
@@ -334,6 +359,9 @@ strings.ja = {
   desc_toggle_headers = "ヘッダーの表示を切り替える",
   desc_toggle_wrap = "長い行の折り返しを切り替える",
   desc_send = "送信する",
+  desc_save_draft = "下書きを保存する",
+  desc_upload_draft = "下書きをサーバに置く",
+  desc_drafts = "保存した下書きを開く",
   desc_discard = "破棄する",
 }
 

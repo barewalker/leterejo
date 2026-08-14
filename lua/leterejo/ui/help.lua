@@ -21,6 +21,7 @@ local ORDER = {
     { "reply_other", "desc_reply_other" },
     { "forward", "desc_forward" },
     { "compose", "desc_compose" },
+    { "drafts", "desc_drafts" },
     { "toggle_seen", "desc_toggle_seen" },
     { "toggle_flagged", "desc_toggle_flagged" },
     { "archive", "desc_archive" },

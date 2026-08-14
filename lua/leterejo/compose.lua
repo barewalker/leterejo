@@ -72,6 +72,27 @@ local function quote_headline(envelope)
   return lang.t("quote_headline", date, from)
 end
 
+-- The account that owns an address, if any owns it.
+--
+-- What decides which server a message goes through. Comparing addresses rather
+-- than names, because that is what the user typed in From.
+function M.account_for(address)
+  address = tostring(address or ""):lower()
+  if address == "" then
+    return nil
+  end
+
+  local names = vim.tbl_keys(config.options.accounts or {})
+  table.sort(names) -- a stable answer if two accounts share an address
+  for _, name in ipairs(names) do
+    local email = (config.options.accounts[name] or {}).email
+    if email and tostring(email):lower() == address then
+      return name
+    end
+  end
+  return nil
+end
+
 -- Split the buffer into headers and body.
 local function parse_buffer(buf)
   local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
@@ -92,44 +113,59 @@ local function parse_buffer(buf)
   return headers, body
 end
 
--- Send.
-function M.send()
+-- Everything needed to hand the message to himalaya, worked out from the
+-- buffer. Sending and filing a copy differ only in the flag at the end.
+--
+--   strict : refuse a message with no recipient or no body. A draft is allowed
+--            to be neither yet; something about to leave is not.
+local function assemble(strict)
   local buf = find_buf()
   if not buf or not pending then
-    return vim.notify(lang.e("no_draft"), vim.log.levels.WARN)
+    vim.notify(lang.e("no_draft"), vim.log.levels.WARN)
+    return nil
   end
 
   local headers, body = parse_buffer(buf)
 
-  local account = headers["x-leterejo-account"]
-  if not account or account == "" then
-    account = state.account
+  local named = headers["x-leterejo-account"]
+  if not named or named == "" then
+    named = state.account
   end
 
+  -- Which address this is sent as, and therefore which account sends it.
+  --
+  -- An address belongs to the account that owns it: sending as the work
+  -- address goes through the work server, because that is the server allowed
+  -- to send for it and the one the recipient's checks will look at. Editing
+  -- From is how the route is chosen, rather than something that quietly
+  -- disagrees with it.
+  --
+  -- An address no account owns keeps the account named in the header. That is
+  -- the alias case — a provider told to expect another address, as Gmail's
+  -- "send mail as" does — and there the route cannot be worked out from the
+  -- address alone.
+  local from = parse_addrs(headers["from"])[1]
+    or ((config.options.accounts or {})[named] or {}).email
+
+  if not from or from == "" then
+    vim.notify(lang.e("no_email_configured", named), vim.log.levels.ERROR)
+    return nil
+  end
+
+  local account = M.account_for(from) or named
   local to = parse_addrs(headers["to"])
-  if #to == 0 then
-    return vim.notify(lang.e("to_empty"), vim.log.levels.ERROR)
-  end
 
-  if vim.trim(body) == "" then
-    return vim.notify(lang.e("body_empty"), vim.log.levels.ERROR)
+  if strict and #to == 0 then
+    vim.notify(lang.e("to_empty"), vim.log.levels.ERROR)
+    return nil
+  end
+  if strict and vim.trim(body) == "" then
+    vim.notify(lang.e("body_empty"), vim.log.levels.ERROR)
+    return nil
   end
 
   local cc = parse_addrs(headers["cc"])
   local bcc = parse_addrs(headers["bcc"])
-
-  -- Which address the message says it is from.
-  --
-  -- Not the same question as which account sends it: the account decides the
-  -- SMTP path, and a provider that has been told to expect another address can
-  -- carry mail for it. Gmail calls that "send mail as", and it has to be set up
-  -- there first — otherwise it rewrites the header or refuses the message.
-  local from = parse_addrs(headers["from"])[1]
-    or ((config.options.accounts or {})[account] or {}).email
-
-  if not from or from == "" then
-    return vim.notify(lang.e("no_email_configured", account), vim.log.levels.ERROR)
-  end
 
   -- Bcc yourself on this route to keep a copy. Some servers run tight on
   -- quota and skip the sent folder entirely. Looked up by the address it is
@@ -193,32 +229,80 @@ function M.send()
   end
 
   vim.list_extend(args, { "--body", body })
+
+  return { buf = buf, args = args, account = account, from = from, bcc = bcc }
+end
+
+-- Send.
+function M.send()
+  local m = assemble(true)
+  if not m then
+    return
+  end
+
+  local args = vim.deepcopy(m.args)
   table.insert(args, "--send")
 
-  local label = #bcc > 0 and lang.t("bcc_note", table.concat(bcc, ", ")) or ""
+  local label = #m.bcc > 0 and lang.t("bcc_note", table.concat(m.bcc, ", ")) or ""
 
   -- Say both when they differ. Sending as one address through another's server
   -- is the case most worth reading back before it goes.
-  local own = ((config.options.accounts or {})[account] or {}).email
-  if own and own:lower() ~= from:lower() then
-    vim.notify(lang.t("sending_via", from, account, label), vim.log.levels.INFO)
+  local own = ((config.options.accounts or {})[m.account] or {}).email
+  if own and own:lower() ~= m.from:lower() then
+    vim.notify(lang.t("sending_via", m.from, m.account, label), vim.log.levels.INFO)
   else
-    vim.notify(lang.t("sending", account, label), vim.log.levels.INFO)
+    vim.notify(lang.t("sending", m.account, label), vim.log.levels.INFO)
   end
 
-  cli.text(args, account, function(ok, out)
+  cli.text(args, m.account, function(ok, out)
     if not ok then
       return vim.notify(lang.e("send_failed") .. "\n" .. out, vim.log.levels.ERROR)
     end
 
     vim.notify(lang.t("sent"), vim.log.levels.INFO)
+
+    -- The draft has been sent, so it is no longer a draft.
+    if pending.draft then
+      os.remove(pending.draft)
+    end
     pending = nil
 
     -- Clean up the buffer once sent.
-    if vim.api.nvim_buf_is_valid(buf) then
-      vim.bo[buf].modified = false
-      vim.api.nvim_buf_delete(buf, { force = true })
+    if vim.api.nvim_buf_is_valid(m.buf) then
+      vim.bo[m.buf].modified = false
+      vim.api.nvim_buf_delete(m.buf, { force = true })
     end
+  end)
+end
+
+-- Put a copy of the draft in a mailbox on the server.
+--
+-- For when a draft has to be reachable from somewhere other than this machine
+-- — a phone, or the webmail. IMAP can only append, never replace, so each time
+-- this is done another copy appears beside the last; the local draft is the one
+-- that gets overwritten in place, and this is the deliberate act.
+function M.upload()
+  local m = assemble(false)
+  if not m then
+    return
+  end
+
+  local a = (config.options.accounts or {})[m.account] or {}
+  local mailbox = a.draft_mailbox or config.options.draft_mailbox
+  if type(mailbox) ~= "string" or mailbox == "" then
+    return vim.notify(lang.e("no_draft_mailbox", m.account), vim.log.levels.WARN)
+  end
+
+  local args = vim.deepcopy(m.args)
+  vim.list_extend(args, { "--save", mailbox })
+
+  vim.notify(lang.t("draft_uploading", mailbox, m.account), vim.log.levels.INFO)
+
+  cli.text(args, m.account, function(ok, out)
+    if not ok then
+      return vim.notify(lang.e("draft_upload_failed") .. "\n" .. out, vim.log.levels.ERROR)
+    end
+    vim.notify(lang.t("draft_uploaded", mailbox), vim.log.levels.INFO)
   end)
 end
 
@@ -231,11 +315,111 @@ local function discard()
   local yes = lang.t("discard_yes")
   vim.ui.select({ yes, lang.t("discard_no") }, { prompt = lang.t("discard_prompt") }, function(choice)
     if choice == yes then
+      if pending and pending.draft then
+        os.remove(pending.draft)
+      end
       pending = nil
       vim.bo[buf].modified = false
       vim.api.nvim_buf_delete(buf, { force = true })
     end
   end)
+end
+
+-- Drafts --------------------------------------------------------------------
+--
+-- Kept as files here rather than in a Drafts mailbox. lieer syncs labels and
+-- messages downwards and has no way to put a half-written one up, and the
+-- alternative — reaching for IMAP again for this one thing — would put the
+-- slowest path back into the one place where a stall is most annoying.
+--
+-- The consequence is that a draft stays on this machine. That is worth saying
+-- plainly rather than hiding: it is not on the phone.
+
+local function draft_dir()
+  return vim.fn.stdpath("state") .. "/leterejo/drafts"
+end
+
+-- The name a draft is filed under: when it was written, and nothing else.
+--
+-- No subject in it. Lua's %w is ASCII, so a Japanese subject would come out as
+-- a row of dashes, and a name that only helps in English is worse than one
+-- that is plainly a timestamp. The picker reads each draft's own Subject line
+-- instead, which is also what a subject typed after the first save needs.
+local function draft_name()
+  local stamp = os.date("%Y%m%d-%H%M%S")
+  local path = draft_dir() .. "/" .. stamp .. ".eml"
+
+  -- Two in the same second would otherwise be one.
+  local n = 1
+  while vim.fn.filereadable(path) == 1 do
+    path = string.format("%s/%s-%d.eml", draft_dir(), stamp, n)
+    n = n + 1
+  end
+
+  return vim.fn.fnamemodify(path, ":t")
+end
+
+-- What a resumed draft needs beyond its own text: which message it answers,
+-- and where that message was. Written into the file and taken back out on
+-- resume, so the buffer itself stays the plain thing the user typed.
+local function draft_headers()
+  local out = {}
+  if pending.kind == "reply" then
+    table.insert(out, "X-Leterejo-Reply: " .. tostring(pending.id))
+  elseif pending.kind == "forward" then
+    table.insert(out, "X-Leterejo-Forward: " .. tostring(pending.id))
+  end
+  if pending.mailbox then
+    table.insert(out, "X-Leterejo-Source: " .. pending.mailbox)
+  end
+  if pending.headline then
+    table.insert(out, "X-Leterejo-Quote: " .. pending.headline)
+  end
+  return out
+end
+
+-- Write the draft out. This is what :w does.
+--
+-- Writing used to send, on the reasoning that anyone whose habit is
+-- write-then-save would want it. That is one keystroke away from sending a
+-- half-written message to its recipient, and there is no taking it back.
+function M.save()
+  local buf = find_buf()
+  if not buf or not pending then
+    return vim.notify(lang.e("no_draft"), vim.log.levels.WARN)
+  end
+
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+
+  if not pending.draft then
+    vim.fn.mkdir(draft_dir(), "p")
+    pending.draft = draft_dir() .. "/" .. draft_name()
+  end
+
+  -- The extra headers go in after the first line, which is the account.
+  local out = { lines[1] }
+  vim.list_extend(out, draft_headers())
+  vim.list_extend(out, vim.list_slice(lines, 2, #lines))
+
+  local ok = pcall(vim.fn.writefile, out, pending.draft)
+  if not ok then
+    return vim.notify(lang.e("draft_failed", pending.draft), vim.log.levels.ERROR)
+  end
+
+  vim.bo[buf].modified = false
+  vim.notify(lang.t("draft_saved", vim.fn.fnamemodify(pending.draft, ":t")), vim.log.levels.INFO)
+end
+
+-- Put an unsaved draft somewhere safe before its buffer is taken.
+--
+-- There is one compose buffer, so starting another message replaces whatever
+-- was in it. Losing half-written words to a keystroke meant for something else
+-- is the kind of thing an editor should never do.
+local function stash()
+  local buf = find_buf()
+  if buf and pending and vim.bo[buf].modified then
+    M.save()
+  end
 end
 
 -- Prepare and open the buffer.
@@ -247,7 +431,7 @@ local function open_buffer(lines, cursor_line)
 
   buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_name(buf, BUFNAME)
-  vim.bo[buf].buftype = "acwrite" -- lets :w send
+  vim.bo[buf].buftype = "acwrite" -- lets :w mean something here
   vim.bo[buf].bufhidden = "hide"
   vim.bo[buf].swapfile = false
   vim.bo[buf].filetype = "mail"
@@ -257,14 +441,17 @@ local function open_buffer(lines, cursor_line)
 
   require("leterejo.keymaps").apply(buf, "compose", {
     send = { handler = M.send, desc = lang.t("desc_send") },
+    save = { handler = M.save, desc = lang.t("desc_save_draft") },
+    upload = { handler = M.upload, desc = lang.t("desc_upload_draft") },
     discard = { handler = discard, desc = lang.t("desc_discard") },
   })
 
-  -- Allow :w to send, for anyone whose habit is write-then-save.
+  -- :w saves the draft. Sending is a key of its own and nothing else, because
+  -- the two are not the same decision and only one of them can be undone.
   vim.api.nvim_create_autocmd("BufWriteCmd", {
     buffer = buf,
     callback = function()
-      M.send()
+      M.save()
     end,
   })
 
@@ -308,8 +495,122 @@ local function first_gap(lines, name)
   return 1
 end
 
+-- Open a draft that was written earlier.
+--
+-- The headers that were only there to remember what the draft answers are
+-- taken back out and put into `pending`, so the buffer looks the way it did
+-- when it was written.
+function M.open_draft(path)
+  stash()
+
+  local ok, lines = pcall(vim.fn.readfile, path)
+  if not ok or type(lines) ~= "table" or #lines == 0 then
+    return vim.notify(lang.e("draft_unreadable", path), vim.log.levels.ERROR)
+  end
+
+  local p = { kind = "compose", draft = path }
+  local kept, in_headers = {}, true
+
+  for _, line in ipairs(lines) do
+    if in_headers and line == "" then
+      in_headers = false
+    end
+
+    local name, value = nil, nil
+    if in_headers then
+      name, value = line:match("^(X%-Leterejo%-[%w%-]+):%s*(.*)$")
+    end
+
+    if name == "X-Leterejo-Reply" then
+      p.kind, p.id = "reply", value
+    elseif name == "X-Leterejo-Forward" then
+      p.kind, p.id = "forward", value
+    elseif name == "X-Leterejo-Source" then
+      p.mailbox = value
+    elseif name == "X-Leterejo-Quote" then
+      p.headline = value
+    else
+      table.insert(kept, line)
+    end
+  end
+
+  -- himalaya prefixes "Re:" / "Fwd:" itself, so a subject that was not edited
+  -- must not be passed on. What was written is what counts as unedited here.
+  for _, line in ipairs(kept) do
+    local subject = line:match("^[Ss]ubject:%s*(.*)$")
+    if subject then
+      p.original_subject = subject
+      break
+    end
+  end
+
+  pending = p
+  open_buffer(kept, first_gap(kept, "To"))
+end
+
+-- The drafts there are, newest first.
+--
+-- Named by when they were written, so sorting the names sorts by time.
+local function draft_files()
+  local dir = draft_dir()
+  if vim.fn.isdirectory(dir) ~= 1 then
+    return {}
+  end
+
+  local found = {}
+  for name, kind in vim.fs.dir(dir) do
+    if kind == "file" and name:sub(-4) == ".eml" then
+      table.insert(found, name)
+    end
+  end
+
+  table.sort(found, function(a, b)
+    return a > b
+  end)
+  return found
+end
+
+-- Pick one of the saved drafts and open it.
+function M.drafts()
+  local files = draft_files()
+  if #files == 0 then
+    return vim.notify(lang.t("draft_none"), vim.log.levels.INFO)
+  end
+
+  local labels = {}
+  for _, name in ipairs(files) do
+    -- Say what it is by its own headers rather than its file name: a subject
+    -- typed after the first save would otherwise never show.
+    local ok, head = pcall(vim.fn.readfile, draft_dir() .. "/" .. name, "", 12)
+    local to, subject = "", ""
+    for _, line in ipairs(ok and head or {}) do
+      to = line:match("^[Tt]o:%s*(.*)$") or to
+      subject = line:match("^[Ss]ubject:%s*(.*)$") or subject
+    end
+
+    local when = name:match("^(%d%d%d%d)(%d%d)(%d%d)%-(%d%d)(%d%d)")
+    when = when and name:sub(5, 6) .. "-" .. name:sub(7, 8) .. " " .. name:sub(10, 11) .. ":" .. name:sub(12, 13)
+      or name
+
+    table.insert(labels, string.format(
+      "%s  %s  → %s",
+      when,
+      subject ~= "" and subject or lang.t("no_subject"),
+      to ~= "" and to or "—"
+    ))
+  end
+
+  vim.ui.select(labels, { prompt = lang.t("pick_draft") }, function(_, idx)
+    if idx then
+      M.open_draft(draft_dir() .. "/" .. files[idx])
+    end
+  end)
+end
+
 -- Start a new message.
 function M.compose()
+  stash()
+
   local account = state.account or "(既定)"
   pending = { kind = "compose", original_subject = nil }
 
@@ -360,6 +661,8 @@ end
 --   `message reply --all`, so the recipients are assembled here. The original
 --   Cc is absent from the envelope, so it is read from the body's headers.
 local function open_reply(envelope, all, extra_to, extra_cc)
+  stash()
+
   local account = state.account or "(既定)"
   local my = ((config.options.accounts or {})[account] or {}).email or ""
 
@@ -446,6 +749,8 @@ end
 
 -- Forward.
 function M.forward(envelope)
+  stash()
+
   local account = state.account or "(既定)"
   local subject = "Fwd: " .. util.strip_invisible(envelope.subject or "")
 

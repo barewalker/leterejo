@@ -131,6 +131,20 @@ M.defaults = {
     retry_delay = 3000,
   },
 
+  -- Where `upload` files a draft on the server, for reaching it from a phone
+  -- or the webmail.
+  --
+  -- Per account, set `draft_mailbox` in the accounts table above; this is the
+  -- fallback. The name goes through the account's [mailbox.alias] map in
+  -- himalaya's own config, so a short "drafts" works where one is defined and
+  -- anything else is passed verbatim ("Drafts", "[Gmail]/Drafts").
+  --
+  -- nil means the action reports that there is nowhere to put it. Drafts are
+  -- kept on this machine either way, and that is what :w writes; this is the
+  -- deliberate extra step, because IMAP can only append — each upload leaves
+  -- another copy beside the last.
+  draft_mailbox = nil,
+
   -- Whether to ask before moving a message to the trash.
   -- Archiving and reporting spam do not ask: both are easy to undo by hand.
   confirm_delete = true,
@@ -205,6 +219,7 @@ M.defaults = {
       spam = "S", -- move to the spam mailbox
       move = "M", -- move to a mailbox you pick
       refresh = "u", -- refetch
+      drafts = "D", -- open a saved draft
       -- l and h do nothing useful in a list of fixed-width rows, so they open
       -- and close the conversation instead. <Tab> toggles.
       expand = "l",
@@ -235,8 +250,13 @@ M.defaults = {
 
     -- The compose buffer.
     -- Prose is typed here, so single keys are not available.
+    --
+    -- Sending has a key of its own and nothing else does it. :w saves the
+    -- draft, which is what writing means everywhere else in the editor.
     compose = {
-      send = "<leader>hs", -- send (:w works too)
+      send = "<leader>hs", -- send
+      save = "<leader>hw", -- save the draft here (:w does the same)
+      upload = "<leader>hu", -- put a copy of the draft in the server's Drafts
       discard = "<leader>hq", -- discard
     },
   },
