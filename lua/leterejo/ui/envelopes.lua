@@ -947,6 +947,66 @@ local function setup_keymaps(buf)
     end)
   end
 
+  -- The filters worth having on a key rather than in the fingers.
+  --
+  -- Two of these cannot be typed usefully at all: the sender under the cursor
+  -- is an address nobody wants to retype, and is:suspicious is not a query the
+  -- index can answer — it is computed while drawing, so it has to be spelled
+  -- exactly to be recognised.
+  -- Two entries are not queries but choices about them.
+  local WRITE, CLEAR = "\0write", "\0clear"
+
+  local function filters()
+    local items, query_of = {}, {}
+
+    -- The query is shown as well as described: the description says what it is
+    -- for, and the query itself teaches what to type next time.
+    local function offer(query, description)
+      local named = query ~= WRITE and query ~= CLEAR
+      local line = named and (util.fit(query, 18) .. "  " .. description) or description
+      table.insert(items, line)
+      query_of[line] = query
+    end
+
+    for _, f in ipairs(config.options.filters or {}) do
+      offer(f.query, f.label or (f.describe and lang.t(f.describe)) or "")
+    end
+
+    -- The sender under the cursor, by address where there is one.
+    --
+    -- A conversation row has no address: notmuch summarises a thread with
+    -- display names alone. The name is still a real query — names are indexed
+    -- too — so it is worth offering rather than leaving the entry out on
+    -- exactly the rows the user is usually looking at.
+    local e = envelope_under_cursor()
+    local first = e and (e.from or {})[1] or nil
+    local sender = first and (first.email or first.name)
+    if sender and sender ~= vim.NIL and sender ~= "" then
+      sender = tostring(sender)
+      offer("from:" .. (sender:find("%s") and ('"' .. sender .. '"') or sender), lang.t("filter_from_here"))
+    end
+
+    offer(WRITE, lang.t("filter_write"))
+    if state.query then
+      offer(CLEAR, lang.t("filter_clear"))
+    end
+
+    require("leterejo.pickers").pick(items, lang.t("pick_filter"), function(line)
+      local query = query_of[line]
+      if query == nil then
+        return
+      end
+
+      if query == WRITE then
+        return search()
+      end
+
+      state.query = query ~= CLEAR and { text = query } or nil
+      state.reset_list()
+      M.refresh()
+    end)
+  end
+
   -- An action on the row under the cursor.
   local function on_row(fn)
     return function()
@@ -1005,6 +1065,7 @@ local function setup_keymaps(buf)
       end,
     },
     search = { desc = lang.t("desc_search"), handler = search },
+    filters = { desc = lang.t("desc_filters"), handler = filters },
     clear_search = {
       desc = lang.t("desc_clear_search"),
       handler = function()
@@ -1076,6 +1137,7 @@ M.HINTS = {
   { "trash", "hint_trash" },
   { "archive", "hint_archive" },
   { "search", "hint_search" },
+  { "filters", "hint_filters" },
   { "mailbox", "hint_mailbox" },
   { "account", "hint_account" },
   { "attachments", "hint_attachments" },

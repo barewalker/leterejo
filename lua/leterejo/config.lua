@@ -56,6 +56,12 @@ M.defaults = {
   --                to drop yourself from a reply-all. himalaya's
   --                `account list` does not report addresses, so it goes here
   --   readonly   : refuse every operation that would modify mail
+  --   send_only  : this account is only somewhere to send from, so do not
+  --                offer it as somewhere to read. An account whose mail is not
+  --                synced here has nothing of its own to show: switching to it
+  --                would draw the same index under a different name
+  --   templates  : how a new message opens, per kind. See templates below
+  --   signature / signature_file : what a message ends with. See below
   --   sent_mailbox : where to keep a copy of what this account sends. See
   --                sent_mailbox further down
   --   unlock_command : how to open the password store for this account,
@@ -79,6 +85,34 @@ M.defaults = {
   -- default remains available on its own key.
   reply_mode = "all",
 
+  -- How a new message opens, per kind: "compose", "reply", "forward".
+  --
+  -- A string (newlines and all) or a list of lines. Set per account in the
+  -- accounts table to write differently from different addresses.
+  --
+  -- These are filled in before the buffer opens:
+  --   {name}     the sender being replied to, by display name where there is
+  --              one and address otherwise
+  --   {email}    their address
+  --   {subject}  the subject of the message being answered
+  --   {date}     when it was sent
+  --
+  -- A greeting is the whole point of this in Japanese: 「{name} 様」 is how the
+  -- message has to start, and typing it out every time is the work worth
+  -- saving.
+  templates = {},
+
+  -- What every message ends with. A string, or a list of lines.
+  --
+  -- Put in the buffer under the "-- " delimiter mail has used for this since
+  -- RFC 3676, rather than handed to himalaya's --signature: what is on the
+  -- screen should be what is sent, and it can be edited before it goes.
+  --
+  -- signature_file names a file to read it from instead, for a signature kept
+  -- outside the configuration. Both can be set per account.
+  signature = nil,
+  signature_file = nil,
+
   -- The tags standing for the states this plugin knows by name.
   --
   -- A mailbox is a tag and a change of state is a change of tag, because on
@@ -95,6 +129,26 @@ M.defaults = {
     inbox = "inbox",
     trash = "trash",
     spam = "spam",
+  },
+
+  -- Filters offered on a key, so the common ones need not be typed.
+  --
+  -- `query` is what the filter actually is; `describe` names a message
+  -- explaining it, and `label` overrides that with a string of your own. The
+  -- query is shown beside the description, which is also how one learns what
+  -- to type when the list is not enough.
+  --
+  -- is:suspicious and is:obfuscated are not queries notmuch can answer — the
+  -- markers are computed while drawing, from invisible characters Xapian never
+  -- indexed — so they are read back and examined. That is the one filter here
+  -- that costs real time, and the header says how many were looked at.
+  filters = {
+    { query = "is:unread", describe = "filter_unread" },
+    { query = "is:flagged", describe = "filter_flagged" },
+    { query = "has:attachment", describe = "filter_attachment" },
+    { query = "is:suspicious", describe = "filter_suspicious" },
+    { query = "is:obfuscated", describe = "filter_obfuscated" },
+    { query = "tag:spam", describe = "filter_spam" },
   },
 
   -- Tags that are not places, and so are not offered as mailboxes.
@@ -262,6 +316,7 @@ M.defaults = {
       move = "M", -- move to a mailbox you pick
       refresh = "u", -- refetch
       drafts = "D", -- open a saved draft
+      filters = "\\", -- pick a filter instead of typing one
       -- l and h do nothing useful in a list of fixed-width rows, so they open
       -- and close the conversation instead. <Tab> toggles.
       expand = "l",

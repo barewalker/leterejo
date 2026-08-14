@@ -30,6 +30,7 @@ local ORDER = {
     { "move", "desc_move" },
     { "attachments", "desc_attachments" },
     { "search", "desc_search" },
+    { "filters", "desc_filters" },
     { "clear_search", "desc_clear_search" },
     { "mailbox", "desc_mailbox" },
     { "account", "desc_account" },
