@@ -93,37 +93,176 @@ function M.account_for(address)
   return nil
 end
 
--- Split the buffer into headers and body.
+-- The header area ------------------------------------------------------------
 --
--- A blank line ends the headers, as in the message itself. But a line that is
--- simply not a header ends them too: writing the first sentence straight after
--- Subject, without the blank line, is an easy thing to do and used to lose that
--- sentence — it was skipped as an unrecognised header, and the body began at
--- whatever blank line came next. A dropped opening sentence is not something
--- the sender would notice before it left.
-local function parse_buffer(buf)
-  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-  local headers, body_start = {}, #lines + 1
+-- One line per field, holding the value and nothing else. The name is drawn
+-- beside it as virtual text: it is not text in the buffer, so it cannot be
+-- deleted by accident, cannot be mistyped, and cannot be mistaken for
+-- something to fill in. A rule under the last field says where the body
+-- starts, and it is drawn too, for the same reason.
+--
+-- Mail really is a plain header block above a blank line, and that is what
+-- goes out. It is not what has to be edited.
 
-  for i, line in ipairs(lines) do
-    if line == "" then
-      body_start = i + 1
-      break
-    end
+local FIELDS = {
+  { key = "from", label = "From" },
+  { key = "to", label = "To" },
+  { key = "cc", label = "Cc" },
+  { key = "bcc", label = "Bcc" },
+  { key = "subject", label = "Subject" },
+}
 
-    local name, value = line:match("^([%w%-]+):%s*(.*)$")
-    if name then
-      headers[name:lower()] = vim.trim(value)
-    elseif not line:match("^[ \t]") then
-      -- Anything that is neither a header nor a folded continuation of the one
-      -- above (RFC 5322 §2.2.3) is where the body starts.
-      body_start = i
-      break
-    end
+local HEADER_LINES = #FIELDS
+local FIELD_INDEX = {}
+for i, f in ipairs(FIELDS) do
+  FIELD_INDEX[f.key] = i
+end
+
+local ns = vim.api.nvim_create_namespace("leterejo-compose")
+
+-- The label column, wide enough for the longest name and a gap after it.
+local LABEL_WIDTH = (function()
+  local w = 0
+  for _, f in ipairs(FIELDS) do
+    w = math.max(w, #f.label)
+  end
+  return w + 2
+end)()
+
+local function decorate(buf)
+  if not vim.api.nvim_buf_is_valid(buf) then
+    return
   end
 
-  local body = table.concat(vim.list_slice(lines, body_start, #lines), "\n")
-  return headers, body
+  vim.api.nvim_buf_clear_namespace(buf, ns, 0, -1)
+
+  for i, f in ipairs(FIELDS) do
+    pcall(vim.api.nvim_buf_set_extmark, buf, ns, i - 1, 0, {
+      virt_text = { { string.format("%-" .. LABEL_WIDTH .. "s", f.label), "LeterejoComposeField" } },
+      virt_text_pos = "inline",
+      right_gravity = false,
+    })
+  end
+
+  -- Where the headers stop. A drawn line rather than a typed one, so there is
+  -- nothing to delete and nothing to wonder about.
+  local width = math.max(40, math.min(vim.o.columns, 100)) - LABEL_WIDTH
+  pcall(vim.api.nvim_buf_set_extmark, buf, ns, HEADER_LINES - 1, 0, {
+    virt_lines = { { { string.rep("─", width), "LeterejoComposeRule" } } },
+  })
+end
+
+-- Keep the shape of the header area whatever is done to it.
+--
+-- A line can still be deleted — this is an editor — but the field it stood for
+-- would then be someone else's, and the body would climb into the headers. So
+-- the count is restored, empty, and what was typed keeps its meaning.
+local function guard(buf)
+  local repairing = false
+
+  vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+    buffer = buf,
+    desc = "leterejo: keep the compose header area intact",
+    callback = function()
+      if repairing or not vim.api.nvim_buf_is_valid(buf) then
+        return
+      end
+
+      local count = vim.api.nvim_buf_line_count(buf)
+      if count < HEADER_LINES then
+        repairing = true
+        local missing = {}
+        for _ = 1, HEADER_LINES - count do
+          table.insert(missing, "")
+        end
+        vim.api.nvim_buf_set_lines(buf, count, count, false, missing)
+        repairing = false
+      end
+
+      decorate(buf)
+    end,
+  })
+
+  vim.api.nvim_create_autocmd({ "VimResized", "WinResized" }, {
+    buffer = buf,
+    desc = "leterejo: redraw the rule at the new width",
+    callback = function()
+      decorate(buf)
+    end,
+  })
+end
+
+-- The header area behaves like a form, not like text.
+--
+-- The accidents worth preventing are the ordinary ones: Enter in the middle of
+-- a field splitting it in two, dd taking a field away and pulling the body up
+-- into its place, o opening a line where a field is expected. None of those
+-- mean anything here, so each is given the meaning it should have — move to
+-- the next field, clear this one, leave the shape alone.
+local function form_keys(buf)
+  local function in_header()
+    return vim.api.nvim_win_get_cursor(0)[1] <= HEADER_LINES
+  end
+
+  -- These return keys rather than doing the work: an expression mapping is not
+  -- allowed to change the buffer itself.
+  local function keys(s)
+    return vim.api.nvim_replace_termcodes(s, true, false, true)
+  end
+
+  local function map(mode, lhs, fn)
+    vim.keymap.set(mode, lhs, fn, { buffer = buf, expr = true, silent = true })
+  end
+
+  -- Clear the field rather than take the line away, which would hand the
+  -- field's place to the one below it and pull the body up.
+  map("n", "dd", function()
+    return in_header() and keys("0D") or "dd"
+  end)
+
+  -- A field is not somewhere to open a line. Move between them instead.
+  map("n", "o", function()
+    return in_header() and keys("j$a") or "o"
+  end)
+  map("n", "O", function()
+    return in_header() and keys("k$a") or "O"
+  end)
+
+  map("n", "J", function()
+    return in_header() and "" or "J"
+  end)
+
+  -- Enter moves to the next field, as it does in every other form. Splitting a
+  -- header in two is never what was meant.
+  map("i", "<cr>", function()
+    return in_header() and keys("<esc>j$a") or keys("<cr>")
+  end)
+end
+
+-- What is in the header area, and what is under it.
+local function read_form(buf)
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+
+  local values = {}
+  for i, f in ipairs(FIELDS) do
+    values[f.key] = vim.trim(lines[i] or "")
+  end
+
+  local body = table.concat(vim.list_slice(lines, HEADER_LINES + 1, #lines), "\n")
+  return values, body
+end
+
+-- The buffer's contents as a message: the header block mail actually uses.
+-- Written to a draft file, and read back from one.
+local function as_message(values, body, extra)
+  local out = {}
+  for _, f in ipairs(FIELDS) do
+    table.insert(out, f.label .. ": " .. (values[f.key] or ""))
+  end
+  vim.list_extend(out, extra or {})
+  table.insert(out, "")
+  vim.list_extend(out, vim.split(body or "", "\n", { plain = true }))
+  return out
 end
 
 -- Everything needed to hand the message to himalaya, worked out from the
@@ -138,9 +277,11 @@ local function assemble(strict)
     return nil
   end
 
-  local headers, body = parse_buffer(buf)
+  local values, body = read_form(buf)
 
-  local named = headers["x-leterejo-account"]
+  -- The account named in the draft, for an address no account owns; otherwise
+  -- the one being read. From is what usually decides, just below.
+  local named = pending.account
   if not named or named == "" then
     named = state.account
   end
@@ -157,7 +298,7 @@ local function assemble(strict)
   -- the alias case — a provider told to expect another address, as Gmail's
   -- "send mail as" does — and there the route cannot be worked out from the
   -- address alone.
-  local from = parse_addrs(headers["from"])[1]
+  local from = parse_addrs(values.from)[1]
     or ((config.options.accounts or {})[named] or {}).email
 
   if not from or from == "" then
@@ -166,7 +307,7 @@ local function assemble(strict)
   end
 
   local account = M.account_for(from) or named
-  local to = parse_addrs(headers["to"])
+  local to = parse_addrs(values.to)
 
   if strict and #to == 0 then
     vim.notify(lang.e("to_empty"), vim.log.levels.ERROR)
@@ -177,8 +318,8 @@ local function assemble(strict)
     return nil
   end
 
-  local cc = parse_addrs(headers["cc"])
-  local bcc = parse_addrs(headers["bcc"])
+  local cc = parse_addrs(values.cc)
+  local bcc = parse_addrs(values.bcc)
 
   -- Bcc yourself on this route to keep a copy. Some servers run tight on
   -- quota and skip the sent folder entirely. Looked up by the address it is
@@ -240,7 +381,7 @@ local function assemble(strict)
 
   -- On reply and forward himalaya prefixes "Re:" / "Fwd:" itself, so only
   -- pass a subject when the user actually edited it.
-  local subject = headers["subject"]
+  local subject = values.subject
   if subject and subject ~= "" and subject ~= pending.original_subject then
     table.insert(args, "--subject=" .. subject)
   elseif pending.kind == "compose" then
@@ -448,20 +589,16 @@ function M.save()
     return vim.notify(lang.e("no_draft"), vim.log.levels.WARN)
   end
 
-  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
-
   if not pending.draft then
     vim.fn.mkdir(draft_dir(), "p")
     pending.draft = draft_dir() .. "/" .. draft_name()
   end
 
-  -- The extra headers go in after the first line, which is the account.
-  local out = { lines[1] }
-  vim.list_extend(out, draft_headers())
-  vim.list_extend(out, vim.list_slice(lines, 2, #lines))
+  local values, body = read_form(buf)
+  local out = as_message(values, body, draft_headers())
 
-  local ok = pcall(vim.fn.writefile, out, pending.draft)
-  if not ok then
+  local written = pcall(vim.fn.writefile, out, pending.draft)
+  if not written then
     return vim.notify(lang.e("draft_failed", pending.draft), vim.log.levels.ERROR)
   end
 
@@ -482,7 +619,29 @@ local function stash()
 end
 
 -- Prepare and open the buffer.
-local function open_buffer(lines, cursor_line)
+-- What the header area starts out holding.
+--
+-- From is filled in from the account being read; editing it is what chooses
+-- the route, since an address belongs to the account that owns it.
+local function form_values(account, to, cc, subject)
+  local from = ((config.options.accounts or {})[account] or {}).email or ""
+  local auto = (config.options.auto_bcc or {})[from] or (config.options.auto_bcc or {})[account]
+
+  return {
+    from = from,
+    to = to or "",
+    cc = cc or "",
+    bcc = auto or "",
+    subject = subject or "",
+  }
+end
+
+-- Open the buffer on a message being written.
+--
+--   values : what goes in the header area, by field
+--   body   : the lines under it
+--   at     : which body line to leave the cursor on, counted from the first
+local function open_buffer(values, body, at)
   local buf = find_buf()
   if buf then
     vim.api.nvim_buf_delete(buf, { force = true })
@@ -495,8 +654,19 @@ local function open_buffer(lines, cursor_line)
   vim.bo[buf].swapfile = false
   vim.bo[buf].filetype = "mail"
 
+  local lines = {}
+  for _, f in ipairs(FIELDS) do
+    table.insert(lines, values[f.key] or "")
+  end
+  vim.list_extend(lines, body or { "" })
+
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].modified = false
+
+  require("leterejo.ui.highlight").setup()
+  decorate(buf)
+  guard(buf)
+  form_keys(buf)
 
   require("leterejo.keymaps").apply(buf, "compose", {
     send = { handler = M.send, desc = lang.t("desc_send") },
@@ -518,41 +688,25 @@ local function open_buffer(lines, cursor_line)
   vim.api.nvim_win_set_buf(0, buf)
   vim.wo.wrap = true
   vim.wo.linebreak = true
-  vim.api.nvim_win_set_cursor(0, { cursor_line, 0 })
-  vim.cmd("startinsert")
+
+  -- On the first empty field, or where the caller asked. Nothing is gained by
+  -- starting on From, which is already right.
+  local row = at and (HEADER_LINES + at) or nil
+  if not row then
+    row = FIELD_INDEX.to
+    for _, f in ipairs(FIELDS) do
+      if (values[f.key] or "") == "" then
+        row = FIELD_INDEX[f.key]
+        break
+      end
+    end
+  end
+
+  pcall(vim.api.nvim_win_set_cursor, 0, { math.min(row, vim.api.nvim_buf_line_count(buf)), 0 })
+  vim.cmd("startinsert!")
 
   return buf
 end
-
--- Build the header block, keeping the outgoing account and address visible.
---
--- Both are editable. The account picks the route the message takes; From is
--- what the message says, and the two need not name the same address — a
--- provider told to expect another one will carry mail for it.
-local function header_lines(account, to, cc, subject)
-  local from = ((config.options.accounts or {})[account] or {}).email or ""
-  local auto = (config.options.auto_bcc or {})[from] or (config.options.auto_bcc or {})[account]
-
-  return {
-    "X-Leterejo-Account: " .. account,
-    "From: " .. from,
-    "To: " .. (to or ""),
-    "Cc: " .. (cc or ""),
-    "Bcc: " .. (auto or ""),
-    "Subject: " .. (subject or ""),
-    "",
-  }
-end
-
--- The body a new message starts with -----------------------------------------
---
--- Two pieces, kept apart because they answer different questions. A template
--- is how a message of this kind opens — a greeting, a form of words used every
--- time. A signature is how every message ends, whatever kind it is.
---
--- Both are put in the buffer rather than handed to himalaya's --signature,
--- because what is on the screen should be what is sent. Either can be edited
--- before sending, which is the point of showing them.
 
 local function as_lines(value)
   if type(value) == "table" then
@@ -636,21 +790,11 @@ local function body_lines(account, kind, envelope)
   return body, cursor
 end
 
--- Which line to leave the cursor on: the first empty header worth filling in.
-local function first_gap(lines, name)
-  for i, line in ipairs(lines) do
-    if line:lower():sub(1, #name + 1) == name:lower() .. ":" then
-      return i
-    end
-  end
-  return 1
-end
-
 -- Open a draft that was written earlier.
 --
--- The headers that were only there to remember what the draft answers are
--- taken back out and put into `pending`, so the buffer looks the way it did
--- when it was written.
+-- The file is an ordinary message: a header block, a blank line, the body. The
+-- headers that were only there to remember what the draft answers are taken
+-- back out into `pending`, and the rest fill the form.
 function M.open_draft(path)
   stash()
 
@@ -660,43 +804,40 @@ function M.open_draft(path)
   end
 
   local p = { kind = "compose", draft = path }
-  local kept, in_headers = {}, true
+  local values, body, in_headers = {}, {}, true
 
   for _, line in ipairs(lines) do
     if in_headers and line == "" then
       in_headers = false
-    end
+    elseif in_headers then
+      local name, value = line:match("^([%w%-]+):%s*(.*)$")
+      name = name and name:lower() or nil
 
-    local name, value = nil, nil
-    if in_headers then
-      name, value = line:match("^(X%-Leterejo%-[%w%-]+):%s*(.*)$")
-    end
-
-    if name == "X-Leterejo-Reply" then
-      p.kind, p.id = "reply", value
-    elseif name == "X-Leterejo-Forward" then
-      p.kind, p.id = "forward", value
-    elseif name == "X-Leterejo-Source" then
-      p.mailbox = value
-    elseif name == "X-Leterejo-Quote" then
-      p.headline = value
+      if name == "x-leterejo-reply" then
+        p.kind, p.id = "reply", value
+      elseif name == "x-leterejo-forward" then
+        p.kind, p.id = "forward", value
+      elseif name == "x-leterejo-source" then
+        p.mailbox = value
+      elseif name == "x-leterejo-quote" then
+        p.headline = value
+      elseif name == "x-leterejo-account" then
+        -- Written by an older draft; From decides the route now.
+        p.account = value
+      elseif name and FIELD_INDEX[name] then
+        values[name] = value
+      end
     else
-      table.insert(kept, line)
+      table.insert(body, line)
     end
   end
 
   -- himalaya prefixes "Re:" / "Fwd:" itself, so a subject that was not edited
   -- must not be passed on. What was written is what counts as unedited here.
-  for _, line in ipairs(kept) do
-    local subject = line:match("^[Ss]ubject:%s*(.*)$")
-    if subject then
-      p.original_subject = subject
-      break
-    end
-  end
+  p.original_subject = values.subject
 
   pending = p
-  open_buffer(kept, first_gap(kept, "To"))
+  open_buffer(values, #body > 0 and body or { "" })
 end
 
 -- The drafts there are, newest first.
@@ -765,11 +906,7 @@ function M.compose()
   local account = state.account or "(既定)"
   pending = { kind = "compose", original_subject = nil }
 
-  local lines = header_lines(account, "", "", "")
-  local body = body_lines(account, "compose")
-  vim.list_extend(lines, body)
-
-  open_buffer(lines, first_gap(lines, "To"))
+  open_buffer(form_values(account, "", "", ""), body_lines(account, "compose"))
 end
 
 -- Pull addresses out of one header line, keeping the "Name <addr>" form.
@@ -845,14 +982,12 @@ local function open_reply(envelope, all, extra_to, extra_cc)
 
   -- No quote here: himalaya appends it after the body on send. Including
   -- one would duplicate it.
-  local lines =
-    header_lines(account, table.concat(to_list, ", "), table.concat(cc_list, ", "), subject)
-
+  local values = form_values(account, table.concat(to_list, ", "), table.concat(cc_list, ", "), subject)
   local body, at = body_lines(account, "reply", envelope)
-  local head = #lines
-  vim.list_extend(lines, body)
 
-  open_buffer(lines, head + at)
+  -- Straight into the body: a reply has its recipients and its subject
+  -- already, and what is missing is what one came to write.
+  open_buffer(values, body, at)
 end
 
 -- Reply. Omitting `all` follows the reply_mode setting.
@@ -917,10 +1052,7 @@ function M.forward(envelope)
     original_subject = subject,
   }
 
-  local lines = header_lines(account, "", "", subject)
-  vim.list_extend(lines, body_lines(account, "forward", envelope))
-
-  open_buffer(lines, first_gap(lines, "To"))
+  open_buffer(form_values(account, "", "", subject), body_lines(account, "forward", envelope))
 end
 
 return M

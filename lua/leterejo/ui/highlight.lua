@@ -44,6 +44,12 @@ local GROUPS = {
   LeterejoThreadMark = { link = "Number" },
   LeterejoTree = { link = "NonText" },
 
+  -- The compose buffer: the field names beside what is typed, and the rule
+  -- that says where the headers stop. Neither is text in the buffer, so both
+  -- are drawn rather than written.
+  LeterejoComposeField = { link = "Identifier" },
+  LeterejoComposeRule = { link = "NonText" },
+
   -- Whole-line states.
   LeterejoEmpty = { link = "Comment" },
   LeterejoMore = { link = "Comment" },
