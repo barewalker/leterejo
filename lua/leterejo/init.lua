@@ -24,4 +24,17 @@ function M.open()
   require("leterejo.ui.envelopes").open()
 end
 
+-- Open the password store, so that sending later does not stop to ask.
+--
+-- Worth having as its own command: the ask arrives at the worst moment
+-- otherwise, in the middle of sending, from a program that cannot draw where
+-- it wants to.
+function M.unlock(account)
+  local lang = require("leterejo.lang")
+
+  require("leterejo.cli").unlock(account or state.account, function(ok, message)
+    vim.notify(lang.t("prefix") .. message, ok and vim.log.levels.INFO or vim.log.levels.WARN)
+  end)
+end
+
 return M

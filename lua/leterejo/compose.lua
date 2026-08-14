@@ -273,8 +273,15 @@ function M.send()
     vim.notify(lang.t("sending", m.account, label), vim.log.levels.INFO)
   end
 
-  cli.text(args, m.account, function(ok, out)
+  cli.text(args, m.account, function(ok, out, kind)
     if not ok then
+      -- A locked password store is not really a failure of the message; the
+      -- draft is untouched and the same send will work once it is open. Offer
+      -- to do that here rather than leave the user to work out that pinentry
+      -- was what flashed past.
+      if kind == "passphrase" then
+        return M.unlock_then_send(m.account)
+      end
       return vim.notify(lang.e("send_failed") .. "\n" .. out, vim.log.levels.ERROR)
     end
 
@@ -291,6 +298,27 @@ function M.send()
       vim.bo[m.buf].modified = false
       vim.api.nvim_buf_delete(m.buf, { force = true })
     end
+  end)
+end
+
+-- Open the password store, then send what is still in the buffer.
+--
+-- Asked rather than done: the unlock takes over the screen for a moment, and a
+-- message the user has decided not to send yet should not drag it up.
+function M.unlock_then_send(account)
+  local yes = lang.t("unlock_yes")
+
+  vim.ui.select({ yes, lang.t("unlock_no") }, { prompt = lang.t("unlock_prompt") }, function(choice)
+    if choice ~= yes then
+      return vim.notify(lang.t("draft_kept"), vim.log.levels.INFO)
+    end
+
+    cli.unlock(account, function(ok, message)
+      vim.notify(lang.t("prefix") .. message, ok and vim.log.levels.INFO or vim.log.levels.WARN)
+      if ok then
+        M.send()
+      end
+    end)
   end)
 end
 

@@ -56,6 +56,9 @@ M.defaults = {
   --                to drop yourself from a reply-all. himalaya's
   --                `account list` does not report addresses, so it goes here
   --   readonly   : refuse every operation that would modify mail
+  --   unlock_command : how to open the password store for this account,
+  --                e.g. { "pass", "show", "mail/work" }. See unlock_command
+  --                further down for why this is worth setting
   --   lieer_dir  : the lieer repository for this account — the directory
   --                holding .gmailieer.json and the mail it fetched. Changes
   --                made here are pushed by running `gmi sync` in it
@@ -130,6 +133,22 @@ M.defaults = {
     retries = 2,
     retry_delay = 3000,
   },
+
+  -- How to open the password store, when something needs a password.
+  --
+  -- himalaya reads the SMTP password from a command — `pass show ...` and the
+  -- like — which asks gpg-agent, which runs pinentry when its cache is cold.
+  -- pinentry-curses draws on GPG_TTY, and that is the terminal Neovim is
+  -- holding: the prompt lands on top of the editor and the keys typed at it go
+  -- to the editor. Nothing can be entered.
+  --
+  -- Naming the same command here lets the unlock happen in a terminal buffer
+  -- instead, which has a terminal of its own for pinentry to use. What the
+  -- command prints is discarded, since what it prints is the password.
+  --
+  -- Per account, set `unlock_command` in the accounts table above; this is the
+  -- fallback. e.g. { "pass", "show", "mail/work" }
+  unlock_command = nil,
 
   -- Where `upload` files a draft on the server, for reaching it from a phone
   -- or the webmail.
