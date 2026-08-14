@@ -853,19 +853,27 @@ function M.mailboxes(account, on_done)
       hidden[t] = true
     end
 
-    local names = {}
-    for _, t in ipairs(tags) do
-      if not hidden[t] then
-        table.insert(names, t)
+    -- An account's own views are named here as well, and a view named after a
+    -- tag it narrows ("inbox", scoped to what one sync tool holds) would
+    -- otherwise be offered twice.
+    local seen, names = {}, {}
+
+    local function add(name)
+      if not hidden[name] and not seen[name] then
+        seen[name] = true
+        table.insert(names, name)
       end
     end
 
     local a = (config.options.accounts or {})[account] or {}
     for name in pairs(a.queries or {}) do
-      table.insert(names, name)
+      add(name)
     end
     for name in pairs(a.folders or {}) do
-      table.insert(names, name)
+      add(name)
+    end
+    for _, t in ipairs(tags) do
+      add(t)
     end
 
     table.sort(names)
