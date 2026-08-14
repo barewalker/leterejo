@@ -544,6 +544,98 @@ local function header_lines(account, to, cc, subject)
   }
 end
 
+-- The body a new message starts with -----------------------------------------
+--
+-- Two pieces, kept apart because they answer different questions. A template
+-- is how a message of this kind opens — a greeting, a form of words used every
+-- time. A signature is how every message ends, whatever kind it is.
+--
+-- Both are put in the buffer rather than handed to himalaya's --signature,
+-- because what is on the screen should be what is sent. Either can be edited
+-- before sending, which is the point of showing them.
+
+local function as_lines(value)
+  if type(value) == "table" then
+    return vim.deepcopy(value)
+  end
+  if type(value) == "string" and value ~= "" then
+    return vim.split(value, "\n", { plain = true })
+  end
+  return {}
+end
+
+-- Read a file, for a signature kept outside the configuration.
+local function file_lines(path)
+  local expanded = vim.fn.expand(path)
+  if vim.fn.filereadable(expanded) ~= 1 then
+    return {}
+  end
+  return vim.fn.readfile(expanded)
+end
+
+local function setting(account, name)
+  local a = (config.options.accounts or {})[account] or {}
+  if a[name] ~= nil then
+    return a[name]
+  end
+  return config.options[name]
+end
+
+-- What is filled in for {name}, {email} and the rest.
+--
+-- The recipient's own name is the whole reason a reply template is worth
+-- having in Japanese: "○○様" is how the message has to start, and typing it
+-- out is exactly the work worth saving.
+local function fill(lines, envelope)
+  local first = envelope and (envelope.from or {})[1] or {}
+  local name = first.name
+  if name == nil or name == vim.NIL or name == "" then
+    name = first.email or ""
+  end
+
+  local values = {
+    name = util.strip_invisible(tostring(name)),
+    email = tostring(first.email or ""),
+    subject = util.strip_invisible(tostring(envelope and envelope.subject or "")),
+    date = envelope and util.format_date(envelope.date) or "",
+  }
+
+  local out = {}
+  for _, line in ipairs(lines) do
+    table.insert(out, (line:gsub("{(%w+)}", function(key)
+      return values[key] or ("{" .. key .. "}")
+    end)))
+  end
+  return out
+end
+
+-- The body a buffer of this kind opens with, and where to leave the cursor in
+-- it: after the template, on the blank line above the signature.
+local function body_lines(account, kind, envelope)
+  local templates = setting(account, "templates") or {}
+  local body = fill(as_lines(templates[kind]), envelope)
+
+  local signature = as_lines(setting(account, "signature"))
+  if #signature == 0 then
+    local path = setting(account, "signature_file")
+    if type(path) == "string" and path ~= "" then
+      signature = file_lines(path)
+    end
+  end
+
+  local cursor = #body + 1
+  table.insert(body, "")
+
+  if #signature > 0 then
+    -- The delimiter mail has used for this since RFC 3676: "-- ", the trailing
+    -- space included. A reader that hides signatures looks for exactly that.
+    table.insert(body, "-- ")
+    vim.list_extend(body, signature)
+  end
+
+  return body, cursor
+end
+
 -- Which line to leave the cursor on: the first empty header worth filling in.
 local function first_gap(lines, name)
   for i, line in ipairs(lines) do
@@ -674,7 +766,9 @@ function M.compose()
   pending = { kind = "compose", original_subject = nil }
 
   local lines = header_lines(account, "", "", "")
-  table.insert(lines, "")
+  local body = body_lines(account, "compose")
+  vim.list_extend(lines, body)
+
   open_buffer(lines, first_gap(lines, "To"))
 end
 
@@ -753,9 +847,12 @@ local function open_reply(envelope, all, extra_to, extra_cc)
   -- one would duplicate it.
   local lines =
     header_lines(account, table.concat(to_list, ", "), table.concat(cc_list, ", "), subject)
-  table.insert(lines, "")
 
-  open_buffer(lines, #lines - 1)
+  local body, at = body_lines(account, "reply", envelope)
+  local head = #lines
+  vim.list_extend(lines, body)
+
+  open_buffer(lines, head + at)
 end
 
 -- Reply. Omitting `all` follows the reply_mode setting.
@@ -821,7 +918,8 @@ function M.forward(envelope)
   }
 
   local lines = header_lines(account, "", "", subject)
-  table.insert(lines, "")
+  vim.list_extend(lines, body_lines(account, "forward", envelope))
+
   open_buffer(lines, first_gap(lines, "To"))
 end
 

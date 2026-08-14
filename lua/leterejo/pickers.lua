@@ -9,7 +9,17 @@ local state = require("leterejo.state")
 local M = {}
 
 -- Pick with fzf-lua when available, else vim.ui.select.
-local function select(items, prompt, on_choice)
+local select
+
+-- Pick from a list, by whichever picker is installed.
+--
+-- Exposed because everything that offers a list of things should offer it the
+-- same way: mailboxes, accounts, saved filters.
+function M.pick(items, prompt, on_choice)
+  return select(items, prompt, on_choice)
+end
+
+select = function(items, prompt, on_choice)
   if #items == 0 then
     return vim.notify(lang.e("no_candidates"), vim.log.levels.WARN)
   end
@@ -67,7 +77,22 @@ function M.pick_account()
       return vim.notify(lang.t("prefix") .. res, vim.log.levels.ERROR)
     end
 
-    select(res, lang.t("pick_account"), function(name)
+    -- Leave out the accounts that exist only to send from.
+    --
+    -- Everything readable comes from one index, so an account whose mail was
+    -- never synced here has nothing of its own to show: switching to it would
+    -- draw the same messages under a different name, with a read-only marker
+    -- that appears to be about them.
+    local config = require("leterejo.config")
+    local readable = {}
+    for _, name in ipairs(res) do
+      local a = (config.options.accounts or {})[name] or {}
+      if not a.send_only then
+        table.insert(readable, name)
+      end
+    end
+
+    select(readable, lang.t("pick_account"), function(name)
       state.account = name
       -- Mailbox names differ per account (Gmail renames its special
       -- folders with the display language), so fall back to the inbox.
