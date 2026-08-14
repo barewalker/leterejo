@@ -12,6 +12,19 @@ local M = {}
 function M.setup(opts)
   config.setup(opts)
   state.account = config.options.account
+
+  -- Fetching on a timer, when one is asked for. Started here rather than when
+  -- the list is opened: mail should arrive whether or not it is being looked
+  -- at, which is the whole point of it running on its own.
+  local lieer = require("leterejo.lieer")
+  lieer.start()
+
+  vim.api.nvim_create_autocmd("VimLeavePre", {
+    group = vim.api.nvim_create_augroup("LeterejoSync", { clear = true }),
+    callback = function()
+      lieer.stop()
+    end,
+  })
 end
 
 -- Open the list.

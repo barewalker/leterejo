@@ -382,10 +382,26 @@ end
 --
 -- A fresh buffer starts at line one, which is the header, so nothing is under
 -- the cursor until the user presses j — and the preview has nothing to show.
+--
+-- After a reload that nobody asked for, the cursor goes back to the message it
+-- was on rather than to the top: rows that arrived above it must not carry the
+-- reader off somewhere else.
 local function place_cursor(buf)
   local win = list_win(buf)
   if not win or #(state.envelopes or {}) == 0 then
     return
+  end
+
+  local keep = M.keep_on
+  M.keep_on = nil
+
+  if keep then
+    for i, e in ipairs(state.envelopes) do
+      if tostring(e.id) == tostring(keep) then
+        pcall(vim.api.nvim_win_set_cursor, win, { i + header_height(), 0 })
+        return
+      end
+    end
   end
 
   local row = vim.api.nvim_win_get_cursor(win)[1]
@@ -612,6 +628,26 @@ function M.redraw()
   if buf then
     redraw(buf)
   end
+end
+
+-- Read the list again after something else fetched, without taking the reader
+-- anywhere.
+--
+-- For the timer, which fires while the list is being read. Rows arriving above
+-- the cursor would otherwise shift whatever is under it, so the message that
+-- was under the cursor is put back under it. A filtered list is left alone
+-- entirely: rebuilding a search someone is working through is not a courtesy.
+function M.reload_quietly()
+  local buf = find_buf()
+  if not buf or state.query then
+    return
+  end
+
+  local e = envelope_under_cursor()
+  M.keep_on = e and e.id or nil
+
+  state.reset_list()
+  M.refresh()
 end
 
 -- Fetch what the server has, then read the list again.
