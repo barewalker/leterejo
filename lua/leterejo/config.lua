@@ -39,6 +39,13 @@ M.defaults = {
   -- user asked for behind a collapsed parent.
   threads = true,
 
+  -- Which way an opened conversation reads.
+  --
+  --   "oldest"  oldest message first, the way a conversation happened
+  --   "newest"  newest first, for following a long thread rather than
+  --             reading it through
+  thread_order = "oldest",
+
   -- Glyphs for the thread column. ASCII by default on purpose: the obvious
   -- alternatives (▸ ▾ ├ └) are East Asian Ambiguous, so they occupy one cell or
   -- two depending on the terminal and 'ambiwidth', and the columns come apart
@@ -281,6 +288,16 @@ M.defaults = {
     executable = "notmuch",
     -- Path to a notmuch config. nil uses notmuch's own default.
     config = nil,
+
+    -- Read the subject and sender from the message file rather than trust
+    -- notmuch's decoding of them.
+    --
+    -- notmuch stops at the first RFC 2047 encoded word, so a header written in
+    -- ISO-2022-JP — most Japanese mail — arrives cut off part way through: 22%
+    -- of a recent sample here, and every attachment name that carries a
+    -- parenthesis. Reading the file costs a few milliseconds per hundred
+    -- messages. Set to false to take notmuch at its word.
+    repair_headers = true,
 
     -- How to turn a message that carries only HTML into something readable.
     -- More than half the mail here is of that kind, and without this it

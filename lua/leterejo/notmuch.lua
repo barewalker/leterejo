@@ -61,8 +61,109 @@ end
 
 -- Shaping ---------------------------------------------------------------
 
--- Split "Name <addr>, Name <addr>" the way himalaya reports addresses.
--- Only the sender is shown in the list, but replies read the whole line.
+-- Decode one RFC 2047 encoded word.
+--
+-- Japanese mail encodes header text this way constantly, usually in
+-- ISO-2022-JP, so the bytes have to be converted as well as decoded.
+local function decode_word(charset, encoding, body)
+  local raw
+
+  if encoding:lower() == "b" then
+    local ok, decoded = pcall(vim.base64.decode, body)
+    raw = ok and decoded or nil
+  else
+    -- Q encoding: underscore is a space, and =XX is a byte.
+    raw = body:gsub("_", " "):gsub("=(%x%x)", function(hex)
+      return string.char(tonumber(hex, 16))
+    end)
+  end
+
+  if not raw then
+    return nil
+  end
+  if charset:lower() == "utf-8" or charset:lower() == "us-ascii" then
+    return raw
+  end
+  return vim.iconv(raw, charset, "utf-8")
+end
+
+-- Turn a header value into the text it stands for.
+--
+-- Whitespace between two encoded words is not content — it is there so the
+-- line can be folded — so it goes. This is the rule notmuch is not applying:
+-- it takes the first word and stops, which is why a name arrives cut off at
+-- whatever the first word happened to end on.
+local function decode_words(value)
+  value = value:gsub("(%?=)%s+(=%?)", "%1%2")
+
+  return (value:gsub("=%?([%w%-]+)%?([BbQq])%?(.-)%?=", function(charset, encoding, body)
+    return decode_word(charset, encoding, body)
+      or ("=?" .. charset .. "?" .. encoding .. "?" .. body .. "?=")
+  end))
+end
+
+-- Read the headers this screen shows from a message file, decoded.
+--
+-- Because notmuch's own decoding stops at the first encoded word: a subject
+-- written in ISO-2022-JP arrives cut off part way through — 22% of a recent
+-- sample here — and an attachment's name loses its extension the same way.
+--
+-- Only the two headers read at a glance are taken, and the file is opened
+-- once for both. The header block is at the front, so a few kilobytes is
+-- enough: 200 messages cost a few milliseconds altogether, against the tens
+-- that listing them costs anyway.
+local HEADER_BYTES = 8192
+
+-- Built once. A case-insensitive class per letter is what Lua patterns offer,
+-- and building these per message was most of the cost of doing this at all.
+local function header_pattern(name)
+  local out = "\n"
+  for c in name:gmatch(".") do
+    if c:match("%a") then
+      out = out .. "[" .. c:upper() .. c:lower() .. "]"
+    else
+      -- Anything else goes in literally, escaped: "message-id" has a hyphen,
+      -- and a hyphen in a pattern is not a hyphen.
+      out = out .. "%" .. c
+    end
+  end
+  return out .. ":[ \t]*(.-)\r?\n[^ \t]"
+end
+
+local SUBJECT_PATTERN = header_pattern("subject")
+local FROM_PATTERN = header_pattern("from")
+local MESSAGE_ID_PATTERN = header_pattern("message-id")
+
+local function headers_from_file(path)
+  local f = io.open(path, "rb")
+  if not f then
+    return nil, nil
+  end
+
+  local text = f:read(HEADER_BYTES) or ""
+  f:close()
+
+  -- Stop at the blank line: what follows is the body, which may well contain
+  -- something shaped like a header. The sentinel line at the end lets a header
+  -- sitting last still match.
+  local head = "\n" .. (text:match("^(.-)\r?\n\r?\n") or text) .. "\n."
+
+  local function value(pattern)
+    local found = head:match(pattern)
+    if not found then
+      return nil
+    end
+    -- Folded across lines; the fold is not part of the value.
+    return decode_words(vim.trim((found:gsub("\r?\n[ \t]+", " "))))
+  end
+
+  -- The id as notmuch spells it: without the angle brackets it is written in.
+  local id = head:match(MESSAGE_ID_PATTERN)
+  id = id and vim.trim(id):match("^<?(.-)>?$") or nil
+
+  return value(SUBJECT_PATTERN), value(FROM_PATTERN), id
+end
+
 local function parse_addrs(line)
   local out = {}
   for _, part in ipairs(vim.split(line or "", ",", { plain = true })) do
@@ -116,6 +217,24 @@ local function envelope_of(msg)
   local h = msg.headers or {}
   local tags = msg.tags or {}
 
+  -- What notmuch reports, corrected from the file where it is wrong.
+  --
+  -- Only the two headers that are read at a glance: the subject, and who it is
+  -- from. Both routinely carry several encoded words in Japanese mail, and
+  -- both are shown in the list.
+  local path = (config.options.notmuch or {}).repair_headers ~= false
+    and type(msg.filename) == "table"
+    and msg.filename[1]
+    or nil
+
+  local subject, from = h.Subject or "", h.From
+
+  if path then
+    local file_subject, file_from = headers_from_file(path)
+    subject = file_subject or subject
+    from = file_from or from
+  end
+
   local has_attachment = false
   for _, t in ipairs(tags) do
     if t == "attachment" then
@@ -128,8 +247,8 @@ local function envelope_of(msg)
     -- The Message-ID, which is the only handle notmuch looks a message up by.
     -- Reading and writing now agree on that, since writing is tagging.
     id = msg.id,
-    subject = h.Subject or "",
-    from = parse_addrs(h.From),
+    subject = subject,
+    from = parse_addrs(from),
     to = parse_addrs(h.To),
     cc = parse_addrs(h.Cc),
     date = iso8601(msg.timestamp),
@@ -347,11 +466,43 @@ function M.list_threads(query, offset, limit, on_done)
       end
     end
 
-    on_done(true, rows)
+    -- A thread's subject comes from the summary, which is decoded the same
+    -- way and cut off the same way. The row stands for one message, so its
+    -- file is where the whole subject is.
+    --
+    -- The files are asked for in one search rather than by fetching each
+    -- message's metadata: that costs a fifth as much, and the file itself says
+    -- which message it holds, so nothing has to line up by position.
+    if (config.options.notmuch or {}).repair_headers == false or #rows == 0 then
+      return on_done(true, rows)
+    end
+
+    local ids = {}
+    for _, row in ipairs(rows) do
+      table.insert(ids, id_query(row.id))
+    end
+
+    run({ "search", "--output=files", table.concat(ids, " or ") }, function(ok2, out2)
+      if ok2 then
+        local subject_of = {}
+        for path in tostring(out2):gmatch("[^\n]+") do
+          local subject, _, id = headers_from_file(vim.trim(path))
+          if id and subject then
+            subject_of[id] = subject
+          end
+        end
+
+        for _, row in ipairs(rows) do
+          row.subject = subject_of[row.id] or row.subject
+        end
+      end
+
+      on_done(true, rows)
+    end)
   end)
 end
 
--- The messages of one thread, oldest first.
+-- The messages of one thread.
 --
 -- Only fetched when a thread is expanded. A long thread costs real time — 460
 -- ms for one of 174 messages — which is why this is not done for every row up
@@ -375,7 +526,16 @@ function M.thread_messages(thread, on_done)
 
     -- `show` walks a thread in reply order, which is close to but not exactly
     -- chronological once a branch is answered late.
+    --
+    -- Oldest first by default, which is how a conversation reads. Newest first
+    -- suits a long thread one is following rather than reading through, where
+    -- what matters is at the bottom otherwise.
+    local newest_first = config.options.thread_order == "newest"
+
     table.sort(envelopes, function(a, b)
+      if newest_first then
+        return tostring(a.date) > tostring(b.date)
+      end
       return tostring(a.date) < tostring(b.date)
     end)
 
@@ -548,6 +708,111 @@ function M.read(id, on_done)
   end)
 end
 
+-- Repairing an attachment's name -----------------------------------------
+--
+-- notmuch cuts a filename at an opening parenthesis:
+--
+--   raw:      filename="2026年8月報告(山田).pdf"
+--   reported: 72期8月技術関連報告(
+--
+-- A parenthesis opens a comment in a structured header, but not inside a
+-- quoted string, and this one is inside one. Japanese mail puts names and
+-- notes in parentheses constantly, so this is not an edge case here — and what
+-- is lost includes the extension, which is what decides how the file opens.
+--
+-- So a name that looks cut is looked up in the message itself. Only a
+-- candidate that begins with what notmuch reported is accepted, which keeps a
+-- guess from turning into a different attachment's name.
+
+local function looks_cut(name)
+  if name:match("%.[%w]+$") then
+    return false -- it still has an extension; leave it alone
+  end
+  local opens = select(2, name:gsub("%(", ""))
+  local closes = select(2, name:gsub("%)", ""))
+  return opens > closes or name:sub(-1) == "("
+end
+
+-- The filenames written in a message file, as they appear in the headers.
+--
+-- Read rather than parsed: a MIME parser is not the thing to write here, and
+-- an accepted candidate has to match what notmuch already reported anyway.
+-- Capped, because a message can be tens of megabytes of base64 and the names
+-- are all in the first part of it.
+local function names_in(path)
+  local f = io.open(path, "rb")
+  if not f then
+    return {}
+  end
+
+  local text = f:read(2 * 1024 * 1024) or ""
+  f:close()
+
+  local found = {}
+  for _, pattern in ipairs({ '[Ff]ilename%s*=%s*"([^"]*)"', '%f[%w][Nn]ame%s*=%s*"([^"]*)"' }) do
+    for value in text:gmatch(pattern) do
+      -- A long value is folded across lines; the fold is not part of it.
+      value = value:gsub("\r?\n[ \t]+", "")
+      table.insert(found, decode_words(value))
+    end
+  end
+  return found
+end
+
+-- Ask notmuch which files hold this message.
+local function files_of(id, on_done)
+  run({ "search", "--output=files", id_query(id) }, function(ok, out)
+    if not ok then
+      return on_done({})
+    end
+
+    local paths = {}
+    for line in tostring(out):gmatch("[^\n]+") do
+      if vim.trim(line) ~= "" then
+        table.insert(paths, vim.trim(line))
+      end
+    end
+    on_done(paths)
+  end)
+end
+
+-- Put back what notmuch cut off, where it can be found.
+local function repaired(id, attachments, on_done)
+  local damaged = false
+  for _, att in ipairs(attachments) do
+    damaged = damaged or looks_cut(att.name)
+  end
+
+  if not damaged then
+    return on_done(true, attachments)
+  end
+
+  files_of(id, function(paths)
+    local candidates = {}
+    for _, path in ipairs(paths) do
+      vim.list_extend(candidates, names_in(path))
+    end
+
+    for _, att in ipairs(attachments) do
+      if looks_cut(att.name) then
+        for _, candidate in ipairs(candidates) do
+          -- Anything still carrying an encoded word failed to decode; showing
+          -- that to the user would be worse than the truncation.
+          if not candidate:find("=?", 1, true)
+            and #candidate > #att.name
+            and candidate:sub(1, #att.name) == att.name
+          then
+            att.name = candidate
+            break
+          end
+        end
+      end
+    end
+
+    on_done(true, attachments)
+  end)
+end
+
 -- List the attachments of a message.
 --
 -- Names come back already decoded, so the RFC 2047 handling the IMAP path
@@ -598,11 +863,59 @@ function M.attachments(id, on_done)
       end
     end
     walk(tree)
-    on_done(true, found)
+    repaired(id, found, on_done)
   end)
 end
 
 -- Pick a path that does not overwrite anything, the way himalaya does it.
+-- The extension a part of this type should be saved under.
+--
+-- A name can arrive damaged (see repaired below), and what opens the file
+-- afterwards decides by extension — `vecview` refuses a PDF that is not called
+-- one. The type does not arrive damaged, so it is the thing to trust.
+local EXTENSIONS = {
+  ["application/pdf"] = "pdf",
+  ["application/zip"] = "zip",
+  ["application/msword"] = "doc",
+  ["application/vnd.ms-excel"] = "xls",
+  ["application/vnd.ms-powerpoint"] = "ppt",
+  ["application/vnd.openxmlformats-officedocument.wordprocessingml.document"] = "docx",
+  ["application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"] = "xlsx",
+  ["application/vnd.openxmlformats-officedocument.presentationml.presentation"] = "pptx",
+  ["image/jpeg"] = "jpg",
+  ["image/svg+xml"] = "svg",
+  ["text/plain"] = "txt",
+  ["text/html"] = "html",
+  ["message/rfc822"] = "eml",
+}
+
+function M.extension_for(content_type)
+  local ct = tostring(content_type or ""):lower():match("^[^;]*")
+  ct = ct and vim.trim(ct) or ""
+
+  if EXTENSIONS[ct] then
+    return EXTENSIONS[ct]
+  end
+
+  -- Otherwise the subtype, when it looks like an extension rather than a
+  -- vendor's full name for itself.
+  local sub = ct:match("/x%-([%w]+)$") or ct:match("/([%w]+)$")
+  if sub and #sub <= 5 then
+    return sub
+  end
+  return nil
+end
+
+-- Make sure a saved file says what it is.
+local function named_for(name, content_type)
+  if tostring(name):match("%.[%w]+$") then
+    return name
+  end
+
+  local ext = M.extension_for(content_type)
+  return ext and (name .. "." .. ext) or name
+end
+
 local function free_path(dir, name)
   -- A name coming off the wire must not be able to escape the directory.
   name = name:gsub("/", "_"):gsub("^%.+", "_")
@@ -690,7 +1003,7 @@ function M.save_attachments(id, dir, on_done)
       vim.system(cmd, { text = false }, function(res)
         vim.schedule(function()
           if res.code == 0 and res.stdout and #res.stdout > 0 then
-            local path = free_path(dir, att.name)
+            local path = free_path(dir, named_for(att.name, att.content_type))
             local f = io.open(path, "wb")
             if f then
               f:write(res.stdout)
