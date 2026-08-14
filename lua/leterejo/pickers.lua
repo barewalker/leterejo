@@ -1,4 +1,4 @@
--- Mailbox and account pickers.
+-- Tag and account pickers.
 --
 -- Either list can run to dozens of entries, so fzf-lua is used when present
 -- and vim.ui.select otherwise.
@@ -14,25 +14,38 @@ local select
 -- Pick from a list, by whichever picker is installed.
 --
 -- Exposed because everything that offers a list of things should offer it the
--- same way: mailboxes, accounts, saved filters.
-function M.pick(items, prompt, on_choice)
-  return select(items, prompt, on_choice)
+-- same way: tags, accounts, saved filters.
+--
+--   opts.multi : allow more than one, where the picker can. fzf-lua can (Tab
+--                marks); vim.ui.select cannot, and takes one as before. The
+--                callback is handed a list either way, so the caller does not
+--                have to care which is installed.
+function M.pick(items, prompt, on_choice, opts)
+  return select(items, prompt, on_choice, opts)
 end
 
-select = function(items, prompt, on_choice)
+select = function(items, prompt, on_choice, opts)
+  opts = opts or {}
+
   if #items == 0 then
     return vim.notify(lang.e("no_candidates"), vim.log.levels.WARN)
+  end
+
+  local function answer(chosen)
+    if not chosen or #chosen == 0 then
+      return
+    end
+    on_choice(opts.multi and chosen or chosen[1])
   end
 
   local ok, fzf = pcall(require, "fzf-lua")
   if ok then
     fzf.fzf_exec(items, {
       prompt = prompt .. "> ",
+      fzf_opts = opts.multi and { ["--multi"] = "" } or nil,
       actions = {
         ["default"] = function(selected)
-          if selected and selected[1] then
-            on_choice(selected[1])
-          end
+          answer(selected)
         end,
       },
     })
@@ -40,9 +53,7 @@ select = function(items, prompt, on_choice)
   end
 
   vim.ui.select(items, { prompt = prompt }, function(choice)
-    if choice then
-      on_choice(choice)
-    end
+    answer(choice and { choice } or nil)
   end)
 end
 

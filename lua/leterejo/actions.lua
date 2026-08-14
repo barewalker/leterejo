@@ -339,6 +339,52 @@ function M.spam(envelope, after)
   })
 end
 
+-- Put tags on this message, and take others off, in one go.
+--
+-- A message carries as many tags as it likes — that is what a label is — so
+-- this takes a set rather than one. Doing them together is not only tidier: it
+-- is one push, and a push is the part that can be refused.
+--
+-- A tag Gmail has never heard of is made there by the sync: lieer sends the
+-- label with the change and Gmail creates it. That is the whole of "making a
+-- new label"; there is nowhere else to do it.
+function M.change_tags(envelope, add, remove)
+  if not envelope or not writable() then
+    return
+  end
+
+  local change = { add = {}, remove = {} }
+  for _, name in ipairs(add or {}) do
+    name = vim.trim(tostring(name))
+    if name ~= "" then
+      table.insert(change.add, name)
+    end
+  end
+  for _, name in ipairs(remove or {}) do
+    name = vim.trim(tostring(name))
+    if name ~= "" then
+      table.insert(change.remove, name)
+    end
+  end
+
+  if #change.add == 0 and #change.remove == 0 then
+    return
+  end
+
+  local said = {}
+  if #change.add > 0 then
+    table.insert(said, lang.t("tag_added", table.concat(change.add, ", ")))
+  end
+  if #change.remove > 0 then
+    table.insert(said, lang.t("tag_removed", table.concat(change.remove, ", ")))
+  end
+
+  apply(envelope, change, {
+    said = table.concat(said, "  "),
+    locally = leaves_view(change) and drops_row() or nil,
+  })
+end
+
 -- Move to a mailbox chosen from the list, which on Gmail means relabelling:
 -- the chosen label goes on, and the one being looked at comes off.
 function M.move_to(envelope, dest, after)

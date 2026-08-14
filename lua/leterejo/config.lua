@@ -320,7 +320,8 @@ M.defaults = {
       forward = "f", -- forward
       compose = "c", -- write a new message
       account = "a", -- pick an account
-      mailbox = "m", -- pick a mailbox
+      mailbox = "m", -- switch to another tag (what Gmail calls a label)
+      tag = "t", -- put a tag on this message, or take one off
       search = "/", -- filter
       clear_search = "<esc>", -- clear the filter
       -- Not g: that is a prefix, so binding it alone would break gg.

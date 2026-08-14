@@ -88,9 +88,19 @@ local HINTS = {
 -- Assemble the displayed lines from attachments, headers and body.
 -- Returns the lines, and which line each attachment entry landed on. The
 -- second is what tells the image layer where to draw.
-local function compose(body, attachments, folded)
+local function compose(body, attachments, folded, tags)
   local lines = {}
   local rows = {}
+
+  -- Which tags this message carries.
+  --
+  -- A message has as many as it likes — a tag is a Gmail label, and a label is
+  -- not a place a message sits in but a thing said about it. The list can only
+  -- show the one being looked through, so this is where the rest are visible.
+  if tags and #tags > 0 then
+    table.insert(lines, lang.t("tags_head", table.concat(tags, "  ")))
+    table.insert(lines, "")
+  end
 
   if config.options.show_hints then
     vim.list_extend(
@@ -380,7 +390,7 @@ end
 --   opts.ratio : height of the split, as a fraction of the screen
 function M.render(m, opts)
   opts = opts or {}
-  local lines, rows = compose(m.body, m.attachments or {}, m.folded)
+  local lines, rows = compose(m.body, m.attachments or {}, m.folded, m.tags)
 
   local buf = find_buf()
   if not buf then
@@ -440,12 +450,13 @@ function M.open(envelope, opts)
     vim.notify(lang.t("reading", subject), vim.log.levels.INFO)
   end
 
-  -- Ask for the body and the attachment list together; the body sets the wait.
-  local body, attachments
-  local body_done, struct_done = false, false
+  -- Ask for the body, the attachment list and the tags together; the body
+  -- sets the wait.
+  local body, attachments, tags
+  local body_done, struct_done, tags_done = false, false, false
 
   local function finish()
-    if not (body_done and struct_done) then
+    if not (body_done and struct_done and tags_done) then
       return
     end
     if not body then
@@ -464,6 +475,7 @@ function M.open(envelope, opts)
       id = id,
       body = body,
       attachments = attachments,
+      tags = tags,
       folded = config.options.fold_headers,
     }
     M.render(state.current_message, opts)
@@ -476,6 +488,12 @@ function M.open(envelope, opts)
       vim.notify(lang.t("prefix") .. out, vim.log.levels.ERROR)
     end
     body_done = true
+    finish()
+  end)
+
+  notmuch.tags_of(id, function(ok, found)
+    tags = ok and found or nil
+    tags_done = true
     finish()
   end)
 

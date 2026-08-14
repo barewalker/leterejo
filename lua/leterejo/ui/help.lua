@@ -33,6 +33,7 @@ local ORDER = {
     { "filters", "desc_filters" },
     { "clear_search", "desc_clear_search" },
     { "mailbox", "desc_mailbox" },
+    { "tag", "desc_tag" },
     { "account", "desc_account" },
     { "refresh", "desc_refresh" },
     { "help", "desc_help" },
