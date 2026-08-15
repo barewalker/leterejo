@@ -183,9 +183,13 @@ local function guard(buf)
     end,
   })
 
-  vim.api.nvim_create_autocmd({ "VimResized", "WinResized" }, {
+  -- Drawn again as the cursor moves as well. An extmark travels with the line
+  -- it was put on, so anything that removes or joins a line takes a name with
+  -- it; redrawing costs six marks and means a form that has been knocked out of
+  -- shape shows it at once rather than quietly misfiling what is typed next.
+  vim.api.nvim_create_autocmd({ "CursorMoved", "CursorMovedI", "InsertLeave", "VimResized", "WinResized" }, {
     buffer = buf,
-    desc = "leterejo: redraw the rule at the new width",
+    desc = "leterejo: keep the field names on their fields",
     callback = function()
       decorate(buf)
     end,
@@ -240,6 +244,39 @@ local function form_keys(buf)
   -- header in two is never what was meant.
   map("i", "<cr>", function()
     return in_header() and keys("<esc>j$a") or keys("<cr>")
+  end)
+
+  -- Backspace at the start of a field, and Delete at the end of one, join it to
+  -- its neighbour. That is how two fields become one line — the names then sit
+  -- side by side, and every value below is a field out of step. There is
+  -- nothing there to delete, so nothing happens.
+  local function at_edge(which)
+    local win = vim.api.nvim_get_current_win()
+    if vim.api.nvim_win_get_buf(win) ~= buf then
+      return false
+    end
+
+    local pos = vim.api.nvim_win_get_cursor(win)
+
+    if which == "start" then
+      -- The first body line counts too: joining it upwards puts the body into
+      -- the subject, which is the same damage from the other side.
+      return pos[2] == 0 and pos[1] <= HEADER_LINES + 1
+    end
+
+    if pos[1] > HEADER_LINES then
+      return false
+    end
+
+    local line = vim.api.nvim_buf_get_lines(buf, pos[1] - 1, pos[1], false)[1] or ""
+    return pos[2] >= #line
+  end
+
+  map("i", "<bs>", function()
+    return at_edge("start") and "" or keys("<bs>")
+  end)
+  map("i", "<del>", function()
+    return at_edge("end") and "" or keys("<del>")
   end)
 
   -- Tab in a field asks who. It has no other meaning in an address.
