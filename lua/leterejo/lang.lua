@@ -11,6 +11,7 @@ strings.en = {
   -- generic
   prefix = "leterejo: ",
   no_candidates = "No candidates",
+  account_not_synced = "No mail is synced here for `%s`, so this is another account's index under its name",
   account_default = "(default)",
   unknown_open_mode = "Unknown open mode: %s",
 
@@ -247,6 +248,7 @@ strings.en = {
 strings.ja = {
   prefix = "leterejo: ",
   no_candidates = "候補がありません",
+  account_not_synced = "`%s` のメールはここに同期されていません。表示は別アカウントの索引です",
   account_default = "(既定)",
   unknown_open_mode = "知らない開き方です: %s",
 
