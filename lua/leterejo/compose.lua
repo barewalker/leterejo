@@ -65,11 +65,11 @@ end
 -- himalaya performs no substitution, so it is assembled here and passed in.
 local function quote_headline(envelope)
   local from = format_addrs(envelope.from)
-  local date = util.format_date(envelope.date)
+  local date = util.format_date(envelope.date, true)
   if from == "" then
-    return lang.t("quote_headline_noname", date)
+    return lang.m("quote_headline_noname", date)
   end
-  return lang.t("quote_headline", date, from)
+  return lang.m("quote_headline", date, from)
 end
 
 -- The account that owns an address, if any owns it.
@@ -1372,11 +1372,11 @@ function M.forward(envelope)
 
     if body then
       table.insert(lines, "")
-      table.insert(lines, lang.t("forwarded_head"))
+      table.insert(lines, lang.m("forwarded_head"))
       for _, name in ipairs({ "from", "date", "subject", "to", "cc" }) do
         local value = (original or {})[name]
         if value and value ~= "" then
-          table.insert(lines, lang.t("header_" .. name) .. ": " .. value)
+          table.insert(lines, lang.m("header_" .. name) .. ": " .. value)
         end
       end
       vim.list_extend(lines, quoted("", body))
