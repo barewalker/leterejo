@@ -11,6 +11,7 @@ strings.en = {
   -- generic
   prefix = "leterejo: ",
   no_candidates = "No candidates",
+  account_default = "(default)",
   unknown_open_mode = "Unknown open mode: %s",
 
   -- errors from the CLI layer
@@ -239,6 +240,7 @@ strings.en = {
 strings.ja = {
   prefix = "leterejo: ",
   no_candidates = "候補がありません",
+  account_default = "(既定)",
   unknown_open_mode = "知らない開き方です: %s",
 
   err_passphrase = "パスワード保管庫が施錠されています",

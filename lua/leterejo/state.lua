@@ -84,7 +84,7 @@ end
 -- Account name for display. Shows that himalaya's default is in use when
 -- none was chosen.
 function M.account_label()
-  return M.account or "(default)"
+  return M.account or require("leterejo.lang").t("account_default")
 end
 
 return M

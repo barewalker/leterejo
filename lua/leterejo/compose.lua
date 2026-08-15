@@ -1114,7 +1114,7 @@ end
 function M.compose()
   stash()
 
-  local account = state.account or "(既定)"
+  local account = state.account or lang.t("account_default")
   pending = { kind = "compose", original_subject = nil }
 
   open_buffer(form_values(account, "", "", ""), body_lines(account, "compose"))
@@ -1164,7 +1164,7 @@ end
 local function open_reply(envelope, all, extra_to, extra_cc)
   stash()
 
-  local account = state.account or "(既定)"
+  local account = state.account or lang.t("account_default")
   local my = ((config.options.accounts or {})[account] or {}).email or ""
 
   local to_list = header_addrs(format_addrs(envelope.from))
@@ -1253,7 +1253,7 @@ end
 function M.forward(envelope)
   stash()
 
-  local account = state.account or "(既定)"
+  local account = state.account or lang.t("account_default")
   local subject = "Fwd: " .. util.strip_invisible(envelope.subject or "")
 
   pending = {
