@@ -106,6 +106,11 @@ local function decode_word(charset, encoding, body)
   if not raw then
     return nil
   end
+
+  -- A charset may carry a language after a star (`utf-8*ja`), which is about
+  -- the text and not about the bytes; iconv would not know the name.
+  charset = charset:gsub("%*.*$", "")
+
   if charset:lower() == "utf-8" or charset:lower() == "us-ascii" then
     return raw
   end
@@ -118,10 +123,15 @@ end
 -- line can be folded — so it goes. This is the rule notmuch is not applying:
 -- it takes the first word and stops, which is why a name arrives cut off at
 -- whatever the first word happened to end on.
+--
+-- The charset is read as "everything up to the next ?" rather than as letters
+-- and hyphens: `shift_jis` has an underscore in it and was left undecoded on
+-- the screen, encoded word and all. Eight messages here, which is few enough
+-- to have gone unnoticed and too many to leave unreadable.
 local function decode_words(value)
   value = value:gsub("(%?=)%s+(=%?)", "%1%2")
 
-  return (value:gsub("=%?([%w%-]+)%?([BbQq])%?(.-)%?=", function(charset, encoding, body)
+  return (value:gsub("=%?([^%?]+)%?([BbQq])%?(.-)%?=", function(charset, encoding, body)
     return decode_word(charset, encoding, body)
       or ("=?" .. charset .. "?" .. encoding .. "?" .. body .. "?=")
   end))
