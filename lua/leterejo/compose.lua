@@ -63,13 +63,42 @@ end
 
 -- Build the line introducing the quoted text.
 -- himalaya performs no substitution, so it is assembled here and passed in.
+-- Fill {name} and its neighbours in a line the sender wrote.
+--
+-- The same names the templates use, so there is one thing to learn rather than
+-- two. Anything unrecognised is left alone: a brace in prose should survive.
+local function substitute(text, values)
+  return (tostring(text):gsub("{(%w+)}", function(key)
+    return values[key] or ("{" .. key .. "}")
+  end))
+end
+
 local function quote_headline(envelope)
-  local from = format_addrs(envelope.from)
-  local date = util.format_date(envelope.date, true)
-  if from == "" then
-    return lang.m("quote_headline_noname", date)
+  local first = (envelope.from or {})[1] or {}
+  local name = first.name
+  if name == nil or name == vim.NIL or name == "" then
+    name = first.email or ""
   end
-  return lang.m("quote_headline", date, from)
+
+  local values = {
+    date = util.format_date(envelope.date, true),
+    name = util.strip_invisible(tostring(name)),
+    email = tostring(first.email or ""),
+    address = format_addrs(envelope.from),
+    subject = util.strip_invisible(envelope.subject or ""),
+  }
+
+  local quote = config.options.quote or {}
+  local written = values.address ~= "" and quote.headline or quote.headline_no_name
+
+  if type(written) == "string" and written ~= "" then
+    return substitute(written, values)
+  end
+
+  if values.address == "" then
+    return lang.m("quote_headline_noname", values.date)
+  end
+  return lang.m("quote_headline", values.date, values.address)
 end
 
 -- The account that owns an address, if any owns it.
@@ -1235,13 +1264,16 @@ local function quoted(headline, body)
     end
   end
 
+  local mark = (config.options.quote or {}).prefix or "> "
+  local blank = vim.trim(mark) ~= "" and vim.trim(mark) or mark
+
   for i = at, #lines do
     local line = lines[i]
-    table.insert(out, line == "" and ">" or ("> " .. line))
+    table.insert(out, line == "" and blank or (mark .. line))
   end
 
   -- A quote of nothing but blank lines is not worth carrying.
-  while #out > 2 and out[#out] == ">" do
+  while #out > 2 and out[#out] == blank do
     table.remove(out)
   end
 
@@ -1371,12 +1403,16 @@ function M.forward(envelope)
     local lines = body_lines(account, "forward", envelope)
 
     if body then
+      local quote = config.options.quote or {}
+
       table.insert(lines, "")
-      table.insert(lines, lang.m("forwarded_head"))
-      for _, name in ipairs({ "from", "date", "subject", "to", "cc" }) do
+      table.insert(lines, quote.forwarded_head or lang.m("forwarded_head"))
+
+      for _, name in ipairs(quote.forwarded_headers or { "from", "date", "subject", "to", "cc" }) do
         local value = (original or {})[name]
         if value and value ~= "" then
-          table.insert(lines, lang.m("header_" .. name) .. ": " .. value)
+          local label = (quote.labels or {})[name] or lang.m("header_" .. name)
+          table.insert(lines, label .. ": " .. value)
         end
       end
       vim.list_extend(lines, quoted("", body))
