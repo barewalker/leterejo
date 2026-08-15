@@ -485,6 +485,25 @@ function M.e(key, ...)
   return M.t("prefix") .. M.t(key, ...)
 end
 
+-- Look up a message that goes into the mail itself.
+--
+-- The line above a quote, and the headers over a forwarded message, are read
+-- by whoever receives it — not by the person at this screen. So they follow
+-- `message_lang` rather than the language of the interface, and default to
+-- English, which is what a header is conventionally written in and what a
+-- stranger is likeliest to read.
+function M.m(key, ...)
+  local wanted = require("leterejo.config").options.message_lang or "en"
+  local table_ = strings[wanted] or strings.en
+  local s = table_[key] or strings.en[key] or key
+
+  if select("#", ...) > 0 then
+    local ok, formatted = pcall(string.format, s, ...)
+    return ok and formatted or s
+  end
+  return s
+end
+
 -- Expose the catalogue so users can add or override entries.
 function M.extend(lang, entries)
   strings[lang] = vim.tbl_extend("force", strings[lang] or {}, entries or {})

@@ -259,7 +259,7 @@ end
 -- part worth reading.
 --
 -- himalaya returns the sender's own offset, so convert to local time first.
-function M.format_date(iso)
+function M.format_date(iso, full)
   if type(iso) ~= "string" then
     return ""
   end
@@ -293,6 +293,13 @@ function M.format_date(iso)
   local local_offset = os.difftime(os.time(os.date("*t", utc)), os.time(os.date("!*t", utc)))
 
   local at = utc - offset + local_offset
+
+  if full then
+    -- Everything, for a line someone else will read: a quote attributed to
+    -- "08-07 23:26" leaves them working out which year it was.
+    return os.date("%Y-%m-%d %H:%M", at)
+  end
+
   if os.date("%Y", at) == os.date("%Y") then
     return os.date("%m-%d %H:%M", at)
   end

@@ -6,6 +6,17 @@ M.defaults = {
   -- lang.extend() can add or override individual messages.
   lang = "en",
 
+  -- Language of the words that go into the mail itself: the line above a
+  -- quote, and the headers over a forwarded message.
+  --
+  -- Separate from the interface, because they are read by whoever receives the
+  -- message rather than by the person writing it. English by default, which is
+  -- what a header is conventionally written in.
+  --
+  -- The greeting a message opens with is not here: that is `templates`, and it
+  -- is written by you.
+  message_lang = "en",
+
   -- The himalaya executable; a bare name is fine when it is on PATH.
   -- Only writing goes through it: reading comes from the notmuch index.
   executable = "himalaya",
