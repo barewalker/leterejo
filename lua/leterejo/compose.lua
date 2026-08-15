@@ -466,6 +466,30 @@ local function assemble(strict)
   return { buf = buf, args = args, account = account, from = from, bcc = bcc, extra = extra }
 end
 
+-- Give the Message-ID the domain the message is from.
+--
+-- himalaya builds one from this machine's hostname — `@my-desktop` — which
+-- is not a domain anyone can look up and does not match the sender. It has no
+-- bearing on SPF, DKIM or DMARC, none of which read it, but a receiving filter
+-- that compares it with From has one more reason to doubt the message, and
+-- every other client sends the two matching. Outlook, from the same address:
+--
+--     <000901dcb27f$8bbccff0$a3366fd0$@work.example>
+--
+-- The unique part is himalaya's; only the host after it is replaced.
+local function with_sender_domain(message, from)
+  if (config.options.message_id_domain or "from") ~= "from" then
+    return message
+  end
+
+  local domain = tostring(from or ""):match("@([%w%.%-]+)%s*$")
+  if not domain then
+    return message
+  end
+
+  return (message:gsub("^(Message%-I[Dd]:%s*<[^@>]*)@[^>]*>", "%1@" .. domain .. ">", 1))
+end
+
 -- Put the threading headers into a message himalaya has already built.
 --
 -- After the first line, which keeps whatever himalaya chose to put first, and
@@ -538,8 +562,8 @@ function M.send()
     end
   end
 
-  -- Nothing to add: let himalaya build it and send it in one go.
-  if #m.extra == 0 then
+  -- Straight through, when there is nothing to correct on the way.
+  if #m.extra == 0 and (config.options.message_id_domain or "from") ~= "from" then
     local args = vim.deepcopy(m.args)
     table.insert(args, "--send")
     if keep then
@@ -569,7 +593,7 @@ function M.send()
         return failed(out2, kind2)
       end
       done()
-    end, { stdin = with_headers(message, m.extra) })
+    end, { stdin = with_sender_domain(with_headers(message, m.extra), m.from) })
   end)
 end
 
@@ -635,7 +659,7 @@ function M.upload()
       return done(false, message)
     end
     cli.text({ "message", "add", "--mailbox=" .. mailbox }, m.account, done, {
-      stdin = with_headers(message, m.extra),
+      stdin = with_sender_domain(with_headers(message, m.extra), m.from),
     })
   end)
 end
@@ -1016,7 +1040,7 @@ function M.suggest()
   -- Only the first opens a picker; the second would land on top of it.
   local opened = false
 
-  require("leterejo.notmuch").addresses(function(list)
+  require("leterejo.notmuch").addresses(state.account, function(list)
     if opened then
       return
     end
@@ -1353,13 +1377,13 @@ function M.reply(envelope, all)
     end
   end
 
-  notmuch.headers_of(envelope.id, { "message-id", "references", "to", "cc" }, function(ok, found)
+  notmuch.headers_of(state.account, envelope.id, { "message-id", "references", "to", "cc" }, function(ok, found)
     original = ok and found or {}
     headers_done = true
     ready()
   end)
 
-  notmuch.read(envelope.id, function(ok, out)
+  notmuch.read(state.account, envelope.id, function(ok, out)
     if not ok then
       vim.notify(lang.e("reply_no_quote"), vim.log.levels.WARN)
     end
@@ -1430,13 +1454,13 @@ function M.forward(envelope)
     end
   end
 
-  notmuch.headers_of(envelope.id, { "from", "date", "subject", "to", "cc" }, function(ok, found)
+  notmuch.headers_of(state.account, envelope.id, { "from", "date", "subject", "to", "cc" }, function(ok, found)
     original = ok and found or {}
     headers_done = true
     ready()
   end)
 
-  notmuch.read(envelope.id, function(ok, out)
+  notmuch.read(state.account, envelope.id, function(ok, out)
     if not ok then
       vim.notify(lang.e("reply_no_quote"), vim.log.levels.WARN)
     end

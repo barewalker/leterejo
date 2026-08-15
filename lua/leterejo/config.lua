@@ -88,6 +88,11 @@ M.defaults = {
   --   lieer_dir  : the lieer repository for this account — the directory
   --                holding .gmailieer.json and the mail it fetched. Changes
   --                made here are pushed by running `gmi sync` in it
+  --   notmuch_config : the notmuch configuration naming this account's index.
+  --                One index per account: two accounts both have an `inbox`,
+  --                and sharing an index would merge a message addressed to
+  --                both into one entry carrying the union of their labels —
+  --                which the next push would then offer to each of them
   --   folders    : mailbox name -> the directory a sync tool actually made,
   --                e.g. { inbox = "gmail/INBOX" }
   --   queries    : mailbox name -> a notmuch query, for views that are not one
@@ -277,6 +282,21 @@ M.defaults = {
   -- fallback. e.g. { "pass", "show", "mail/work" }
   unlock_command = nil,
 
+  -- What domain the Message-ID carries.
+  --
+  --   "from"  the domain the message is sent from (the default)
+  --   false   whatever himalaya put there
+  --
+  -- himalaya builds it from this machine's hostname, which is not a domain
+  -- anyone can look up and does not match the sender. Nothing in SPF, DKIM or
+  -- DMARC reads the Message-ID, so this is not why a message would fail any of
+  -- them — but a receiving filter that compares it with From has one more
+  -- reason to doubt the message, and every other client sends the two matching.
+  --
+  -- Correcting it means letting himalaya build the message and then sending
+  -- that, which is one more local run of himalaya per message.
+  message_id_domain = "from",
+
   -- Where a copy of a sent message is kept.
   --
   -- Per account, set `sent_mailbox` in the accounts table above; this is the
@@ -343,7 +363,12 @@ M.defaults = {
   -- run of Japanese cannot be found at all.
   notmuch = {
     executable = "notmuch",
-    -- Path to a notmuch config. nil uses notmuch's own default.
+    -- Path to a notmuch config, for accounts that do not name their own.
+    -- nil uses notmuch's own default.
+    --
+    -- With more than one account, give each its own `notmuch_config` instead:
+    -- an index holds one account's mail, and its tags are that account's
+    -- labels. See the accounts table above.
     config = nil,
 
     -- Which mail the address suggestions are collected from, and how long a

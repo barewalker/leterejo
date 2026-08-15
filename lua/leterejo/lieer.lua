@@ -53,11 +53,29 @@ function M.sync(account, on_done)
   local opts = config.options.lieer or {}
   local attempts = (opts.retries or 2) + 1
 
+  -- What gmi needs in its environment.
+  --
+  -- lieer registers what it fetched in notmuch itself, so it is an indexer, and
+  -- an indexer that runs without XAPIAN_CJK_NGRAM=1 writes messages that cannot
+  -- be searched inside a run of Japanese — the failure §13.4 of the design
+  -- notes describes, which says nothing and shows nothing until someone
+  -- searches for a word inside a longer one.
+  --
+  -- And the index has to be this account's: lieer reads notmuch's configuration
+  -- for the database path and for new.tags.
+  local env = { XAPIAN_CJK_NGRAM = "1" }
+
+  local a = (config.options.accounts or {})[account] or {}
+  local notmuch_config = a.notmuch_config or (config.options.notmuch or {}).config
+  if notmuch_config then
+    env.NOTMUCH_CONFIG = vim.fn.expand(notmuch_config)
+  end
+
   local function attempt(n)
     vim.system({
       opts.executable or "gmi",
       "sync",
-    }, { text = true, cwd = dir, timeout = opts.timeout or 120000 }, function(res)
+    }, { text = true, cwd = dir, env = env, timeout = opts.timeout or 120000 }, function(res)
       -- vim.system finishes in a fast-event context where touching the screen
       -- crashes; hop back to the main loop first.
       vim.schedule(function()

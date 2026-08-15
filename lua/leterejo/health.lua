@@ -96,38 +96,83 @@ local function check_notmuch(config)
     end
   end
 
-  -- Where the mail is, and whether there is any. A database that answers zero
-  -- looks exactly like a broken query from inside the plugin.
-  local env = { XAPIAN_CJK_NGRAM = "1" }
-  if opts.config then
-    env.NOTMUCH_CONFIG = vim.fn.expand(opts.config)
-  end
+  -- Every account's index, one at a time.
+  --
+  -- One per account is the arrangement: an index holds one account's mail, and
+  -- its tags are that account's labels. Two sharing one would merge a message
+  -- addressed to both and offer each the other's labels on the next push.
+  local names = vim.tbl_keys(config.options.accounts or {})
+  table.sort(names)
 
-  local ok, root = pcall(function()
-    return vim.system({ exe, "config", "get", "database.mail_root" }, { text = true, env = env })
-      :wait()
-  end)
-  if ok and root and root.code == 0 and vim.trim(root.stdout) ~= "" then
-    vim.health.ok("mail_root: " .. vim.trim(root.stdout))
-  else
-    vim.health.warn("Could not read database.mail_root", {
-      "notmuch may not be configured yet. Run `notmuch new` once.",
-    })
-  end
+  local checked = {}
+  for _, name in ipairs(names) do
+    local a = config.options.accounts[name] or {}
 
-  local counted = pcall(function()
-    local c = vim.system({ exe, "count", "*" }, { text = true, env = env }):wait()
-    local n = tonumber(vim.trim(c.stdout or ""))
-    if n and n > 0 then
-      vim.health.ok(("%d messages indexed"):format(n))
+    if a.send_only then
+      -- Only somewhere to send from; it has no mail here and wants none.
+    elseif not (a.lieer_dir or (config.options.lieer or {}).dir) then
+      -- No repository means no mail of its own, and without its own
+      -- `notmuch_config` it would answer out of whichever index the default
+      -- names — another account's, which is worse than answering nothing.
+      vim.health.warn(name .. ": nothing is synced here", {
+        "Reading under this account draws another account's index.",
+        "Give it a lieer_dir and a notmuch_config, or mark it send_only.",
+      })
     else
-      vim.health.warn("The index holds no messages", {
-        "Nothing will be listed. Sync some mail and run `notmuch new`.",
+      table.insert(checked, { account = name, config = a.notmuch_config or opts.config })
+    end
+  end
+  if #checked == 0 then
+    checked = { { account = nil, config = opts.config } }
+  end
+
+  local seen = {}
+  for _, entry in ipairs(checked) do
+    local env = { XAPIAN_CJK_NGRAM = "1" }
+    if entry.config then
+      env.NOTMUCH_CONFIG = vim.fn.expand(entry.config)
+    end
+
+    local label = entry.account and (entry.account .. ": ") or ""
+
+    -- Two accounts pointed at one index is the mistake worth naming.
+    local key = env.NOTMUCH_CONFIG or "(default)"
+    if seen[key] and entry.account then
+      vim.health.error(label .. "shares an index with `" .. seen[key] .. "`", {
+        "Two accounts in one index merge a message addressed to both, and the",
+        "next push offers each of them the other's labels.",
+        "Give each account its own notmuch_config.",
       })
     end
-  end)
-  if not counted then
-    vim.health.warn("Could not count the indexed messages")
+    seen[key] = entry.account or seen[key]
+
+    local ok, root = pcall(function()
+      return vim.system({ exe, "config", "get", "database.mail_root" }, { text = true, env = env })
+        :wait()
+    end)
+    if ok and root and root.code == 0 and vim.trim(root.stdout) ~= "" then
+      vim.health.ok(label .. "mail_root: " .. vim.trim(root.stdout))
+    else
+      vim.health.warn(label .. "could not read database.mail_root", {
+        entry.config and ("NOTMUCH_CONFIG=" .. vim.fn.expand(entry.config)) or
+          "notmuch may not be configured yet. Run `notmuch new` once.",
+      })
+    end
+
+    local counted = pcall(function()
+      local c = vim.system({ exe, "count", "*" }, { text = true, env = env }):wait()
+      local n = tonumber(vim.trim(c.stdout or ""))
+      if n and n > 0 then
+        vim.health.ok(("%s%d messages indexed"):format(label, n))
+      else
+        vim.health.warn(label .. "the index holds no messages", {
+          "Nothing will be listed. Sync some mail first.",
+        })
+      end
+    end)
+    if not counted then
+      vim.health.warn(label .. "could not count the indexed messages")
+    end
   end
 
   -- The one failure that gives no sign of itself.
