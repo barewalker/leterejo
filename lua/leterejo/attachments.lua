@@ -229,14 +229,14 @@ end
 -- The reply carries where each file actually landed, since a name already taken
 -- gets a "(1)" appended. Always open the returned path; never a path assembled
 -- by guessing.
-function M.download_and_open(id, attachments)
+function M.download_and_open(account, id, attachments)
   if #attachments == 0 then
     return vim.notify(lang.e("no_attachments"), vim.log.levels.INFO)
   end
 
   vim.notify(lang.t("downloading", #attachments), vim.log.levels.INFO)
 
-  notmuch.save_attachments(id, config.options.download_dir, function(ok, res)
+  notmuch.save_attachments(account, id, config.options.download_dir, function(ok, res)
     if not ok then
       return vim.notify(lang.t("prefix") .. res, vim.log.levels.ERROR)
     end

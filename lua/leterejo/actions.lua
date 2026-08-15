@@ -125,7 +125,7 @@ end
 -- `refusal` is what lieer said while exiting successfully, when it said
 -- anything: the change was not sent, and its own words are more use than a
 -- sentence of ours guessing at why.
-local function reverted(id, change, refusal)
+local function reverted(account, id, change, refusal)
   local wanted = {}
   for _, t in ipairs(change.add or {}) do
     table.insert(wanted, "+" .. t)
@@ -146,7 +146,7 @@ local function reverted(id, change, refusal)
   -- saying something Gmail does not — a message tagged both spam and inbox,
   -- which cannot be true there. Better to agree with the server about a change
   -- that did not happen than to remember one that never will.
-  notmuch.tag(id, { add = change.remove, remove = change.add }, function()
+  notmuch.tag(account, id, { add = change.remove, remove = change.add }, function()
     require("leterejo.ui.envelopes").refresh()
   end)
 end
@@ -158,7 +158,7 @@ end
 -- back by then, so there is nothing left to re-try. Setting them again against
 -- the state that has just arrived is what actually gets it through.
 local function confirm(account, id, change, tries, refusal)
-  notmuch.tags_of(id, function(ok, tags)
+  notmuch.tags_of(account, id, function(ok, tags)
     if not ok then
       return -- cannot tell; leave the screen alone rather than guess
     end
@@ -166,16 +166,16 @@ local function confirm(account, id, change, tries, refusal)
       return
     end
     if tries <= 0 then
-      return reverted(id, change, refusal)
+      return reverted(account, id, change, refusal)
     end
 
-    notmuch.tag(id, change, function(tagged)
+    notmuch.tag(account, id, change, function(tagged)
       if not tagged then
-        return reverted(id, change, refusal)
+        return reverted(account, id, change, refusal)
       end
       lieer.sync(account, function(synced, _, refused)
         if not synced then
-          return reverted(id, change, refusal)
+          return reverted(account, id, change, refusal)
         end
         confirm(account, id, change, tries - 1, refused or refusal)
       end)
@@ -218,7 +218,7 @@ local function apply(envelope, change, opts)
 
   local account, mailbox, id = state.account, state.mailbox, envelope.id
 
-  notmuch.tag(id, change, function(ok, res)
+  notmuch.tag(account, id, change, function(ok, res)
     if not ok then
       return err(res)
     end

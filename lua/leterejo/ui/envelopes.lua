@@ -483,9 +483,9 @@ local function fetch_batch(account, mailbox, offset, limit, on_done)
   end
   local query = notmuch.query_for(account, mailbox)
   if threaded() then
-    return notmuch.list_threads(query, offset, limit, on_done)
+    return notmuch.list_threads(account, query, offset, limit, on_done)
   end
-  return notmuch.list_at(query, offset, limit, on_done)
+  return notmuch.list_at(account, query, offset, limit, on_done)
 end
 
 -- Ask for the next batch. Guarded so a burst of cursor movement cannot start
@@ -554,7 +554,7 @@ local function load_first(buf)
   -- A filter started while this was out would otherwise be labelled with the
   -- whole mailbox's total: the count is slow enough (a second, on a large
   -- mailbox) for that to be an ordinary sequence of keystrokes, not a race.
-  notmuch.count(notmuch.query_for(account, mailbox), threaded(), function(ok, total)
+  notmuch.count(account, notmuch.query_for(account, mailbox), threaded(), function(ok, total)
     if ok and state.account == account and state.mailbox == mailbox and not state.query then
       state.total = total
       redraw_in_place(buf)
@@ -901,7 +901,7 @@ local function expand_thread()
   local account, thread = state.account, e.thread
   vim.notify(lang.t("thread_loading"), vim.log.levels.INFO)
 
-  notmuch.thread_messages(thread, function(ok, msgs)
+  notmuch.thread_messages(account, thread, function(ok, msgs)
     if not ok then
       return vim.notify(lang.t("prefix") .. tostring(msgs), vim.log.levels.ERROR)
     end
@@ -943,12 +943,12 @@ local function setup_keymaps(buf)
     local id = e.id
     vim.notify(lang.t("checking_attachments"), vim.log.levels.INFO)
 
-    notmuch.attachments(id, function(ok, atts)
+    notmuch.attachments(state.account, id, function(ok, atts)
       if not ok then
         return vim.notify(lang.t("prefix") .. tostring(atts), vim.log.levels.ERROR)
       end
 
-      require("leterejo.attachments").download_and_open(id, atts or {})
+      require("leterejo.attachments").download_and_open(state.account, id, atts or {})
     end)
   end
 
@@ -1054,7 +1054,7 @@ local function setup_keymaps(buf)
       return
     end
 
-    notmuch.tags_of(e.id, function(ok, tags)
+    notmuch.tags_of(state.account, e.id, function(ok, tags)
       if not ok then
         return vim.notify(lang.t("prefix") .. tostring(tags), vim.log.levels.ERROR)
       end
@@ -1064,7 +1064,7 @@ local function setup_keymaps(buf)
         carried[t] = true
       end
 
-      notmuch.tags(function(ok2, all)
+      notmuch.tags(state.account, function(ok2, all)
         if not ok2 then
           return vim.notify(lang.t("prefix") .. tostring(all), vim.log.levels.ERROR)
         end

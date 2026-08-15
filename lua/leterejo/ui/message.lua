@@ -223,7 +223,7 @@ local function download()
     return vim.notify(lang.e("no_message_shown"), vim.log.levels.WARN)
   end
 
-  require("leterejo.attachments").download_and_open(m.id, m.attachments or {})
+  require("leterejo.attachments").download_and_open(m.account, m.id, m.attachments or {})
 end
 
 local function setup_keymaps(buf)
@@ -495,7 +495,7 @@ function M.open(envelope, opts)
     M.render(state.current_message, opts)
   end
 
-  notmuch.read(id, function(ok, out)
+  notmuch.read(account, id, function(ok, out)
     if ok then
       body = out
     elseif not opts.quiet then
@@ -505,13 +505,13 @@ function M.open(envelope, opts)
     finish()
   end)
 
-  notmuch.tags_of(id, function(ok, found)
+  notmuch.tags_of(account, id, function(ok, found)
     tags = ok and found or nil
     tags_done = true
     finish()
   end)
 
-  notmuch.attachments(id, function(ok, atts)
+  notmuch.attachments(account, id, function(ok, atts)
     -- Show the body even without the list; only the attachments are missing,
     -- which is a small loss.
     attachments = ok and atts or {}

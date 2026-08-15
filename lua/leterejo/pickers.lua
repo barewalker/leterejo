@@ -72,7 +72,7 @@ function M.pick_mailbox_name(prompt, on_choice, opts)
   local notmuch = require("leterejo.notmuch")
 
   if opts.tags_only then
-    return notmuch.tags(function(ok, tags)
+    return notmuch.tags(state.account, function(ok, tags)
       if not ok then
         return vim.notify(lang.t("prefix") .. tags, vim.log.levels.ERROR)
       end

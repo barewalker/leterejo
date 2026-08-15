@@ -103,7 +103,7 @@ function M.show(buf, id, attachments, rows)
       if vim.fn.filereadable(path) == 1 then
         place(buf, path, row)
       else
-        notmuch.save_part(id, att.part, path, function(ok)
+        notmuch.save_part(require("leterejo.state").account, id, att.part, path, function(ok)
           if ok then
             place(buf, path, row)
           end

@@ -17,16 +17,41 @@ local lang = require("leterejo.lang")
 
 local M = {}
 
--- Run notmuch asynchronously.
-local function run(args, on_done)
-  local opts = require("leterejo.config").options.notmuch or {}
+-- Which index an account reads and writes.
+--
+-- One per account, so that two accounts are two mailboxes rather than one heap.
+-- A tag belongs to an account: both of these have an `inbox`, and if they
+-- shared a database a message addressed to both would carry the union of their
+-- labels and offer each account the other's on the next push.
+--
+-- Falls back to the shared configuration, which is the whole of it when there
+-- is only one account.
+local function notmuch_config(account)
+  local a = (config.options.accounts or {})[account] or {}
+  return a.notmuch_config or (config.options.notmuch or {}).config
+end
 
+-- The environment every call needs: the index to use, and the variable without
+-- which Japanese cannot be searched (§13.4 of the design notes).
+local function environment(account)
   local env = { XAPIAN_CJK_NGRAM = "1" }
-  if opts.config then
-    env.NOTMUCH_CONFIG = vim.fn.expand(opts.config)
-  end
 
-  local cmd = { opts.executable or "notmuch" }
+  local path = notmuch_config(account)
+  if path then
+    env.NOTMUCH_CONFIG = vim.fn.expand(path)
+  end
+  return env
+end
+
+local function executable()
+  return (config.options.notmuch or {}).executable or "notmuch"
+end
+
+-- Run notmuch asynchronously, against one account's index.
+local function run(account, args, on_done)
+  local env = environment(account)
+
+  local cmd = { executable() }
   vim.list_extend(cmd, args)
 
   vim.system(cmd, { text = true, env = env }, function(res)
@@ -43,8 +68,8 @@ local function run(args, on_done)
   end)
 end
 
-local function run_json(args, on_done)
-  run(args, function(ok, out)
+local function run_json(account, args, on_done)
+  run(account, args, function(ok, out)
     if not ok then
       return on_done(false, out)
     end
@@ -288,11 +313,11 @@ end
 --
 -- Addressed by offset rather than by page: the list grows as it is scrolled and
 -- knows how many rows it holds, not which page it is on.
-function M.list_at(query, offset, size, on_done)
+function M.list_at(account, query, offset, size, on_done)
   offset = offset or 0
   size = size or 50
 
-  run({
+  run(account, {
     "search",
     "--format=json",
     "--output=messages",
@@ -342,7 +367,7 @@ function M.list_at(query, offset, size, on_done)
       end
 
       pending = pending + 1
-      run_json({
+      run_json(account, {
         "show",
         "--format=json",
         "--body=false",
@@ -369,8 +394,8 @@ end
 -- no way to tell "the last batch was short because we reached the end" from
 -- "the last batch was short because something went wrong", and the list would
 -- keep asking for more forever.
-function M.count(query, threaded, on_done)
-  run({
+function M.count(account, query, threaded, on_done)
+  run(account, {
     "count",
     threaded and "--output=threads" or "--output=messages",
     query,
@@ -425,8 +450,8 @@ end
 -- it orders a thread's messages oldest first. Checked against every
 -- multi-message thread in a 9,000-message inbox, but fall back to the first id
 -- rather than nothing if a future version disagrees.
-function M.list_threads(query, offset, limit, on_done)
-  run({
+function M.list_threads(account, query, offset, limit, on_done)
+  run(account, {
     "search",
     "--format=json",
     "--output=summary",
@@ -482,7 +507,7 @@ function M.list_threads(query, offset, limit, on_done)
       table.insert(ids, id_query(row.id))
     end
 
-    run({ "search", "--output=files", table.concat(ids, " or ") }, function(ok2, out2)
+    run(account, { "search", "--output=files", table.concat(ids, " or ") }, function(ok2, out2)
       if ok2 then
         local subject_of = {}
         for path in tostring(out2):gmatch("[^\n]+") do
@@ -507,8 +532,8 @@ end
 -- Only fetched when a thread is expanded. A long thread costs real time — 460
 -- ms for one of 174 messages — which is why this is not done for every row up
 -- front.
-function M.thread_messages(thread, on_done)
-  run_json({
+function M.thread_messages(account, thread, on_done)
+  run_json(account, {
     "show",
     "--format=json",
     "--body=false",
@@ -554,7 +579,7 @@ end
 
 -- Find the first text/html part of a message.
 local function html_part_id(id, on_done)
-  run_json({
+  run_json(account, {
     "show",
     "--format=json",
     "--body=true",
@@ -649,12 +674,12 @@ local function strip_markers(text)
   return table.concat(out, "\n")
 end
 
-function M.read(id, on_done)
+function M.read(account, id, on_done)
   local function show(extra, cb)
     local args = { "show", "--format=text", "--entire-thread=false" }
     vim.list_extend(args, extra)
     table.insert(args, id_query(id))
-    run(args, function(ok, out)
+    run(account, args, function(ok, out)
       cb(ok, ok and strip_markers(out) or out)
     end)
   end
@@ -685,7 +710,7 @@ function M.read(id, on_done)
         return raw(on_done)
       end
 
-      run({
+      run(account, {
         "show",
         "--format=raw",
         "--part=" .. tostring(part),
@@ -761,7 +786,7 @@ end
 
 -- Ask notmuch which files hold this message.
 local function files_of(id, on_done)
-  run({ "search", "--output=files", id_query(id) }, function(ok, out)
+  run(account, { "search", "--output=files", id_query(id) }, function(ok, out)
     if not ok then
       return on_done({})
     end
@@ -817,8 +842,8 @@ end
 --
 -- Names come back already decoded, so the RFC 2047 handling the IMAP path
 -- needed does not apply here.
-function M.attachments(id, on_done)
-  run_json({
+function M.attachments(account, id, on_done)
+  run_json(account, {
     "show",
     "--format=json",
     "--body=true",
@@ -947,17 +972,15 @@ end
 -- Used to get an image out of a message and onto disk, because the terminal
 -- draws images from files. The content is binary, so it is read with no text
 -- conversion; anything else would corrupt it silently.
-function M.save_part(id, part, path, on_done)
-  local opts = require("leterejo.config").options.notmuch or {}
-
+function M.save_part(account, id, part, path, on_done)
   vim.system({
-    opts.executable or "notmuch",
+    executable(),
     "show",
     "--format=raw",
     "--part=" .. tostring(part),
     "--entire-thread=false",
     id_query(id),
-  }, { text = false }, function(res)
+  }, { text = false, env = environment(account) }, function(res)
     vim.schedule(function()
       if res.code ~= 0 or not res.stdout or #res.stdout == 0 then
         return on_done(false, lang.t("err_notmuch"))
@@ -974,7 +997,7 @@ function M.save_part(id, part, path, on_done)
   end)
 end
 
-function M.save_attachments(id, dir, on_done)
+function M.save_attachments(account, id, dir, on_done)
   dir = vim.fn.expand(dir or "~/Downloads")
   vim.fn.mkdir(dir, "p")
 
@@ -986,12 +1009,11 @@ function M.save_attachments(id, dir, on_done)
       return on_done(true, { attachments = {} })
     end
 
-    local opts = require("leterejo.config").options.notmuch or {}
     local saved, pending, failed = {}, #atts, nil
 
     for i, att in ipairs(atts) do
       local cmd = {
-        opts.executable or "notmuch",
+        executable(),
         "show",
         "--format=raw",
         "--part=" .. tostring(att.part),
@@ -1000,7 +1022,7 @@ function M.save_attachments(id, dir, on_done)
       }
 
       -- Binary, so no text conversion.
-      vim.system(cmd, { text = false }, function(res)
+      vim.system(cmd, { text = false, env = environment(account) }, function(res)
         vim.schedule(function()
           if res.code == 0 and res.stdout and #res.stdout > 0 then
             local path = free_path(dir, named_for(att.name, att.content_type))
@@ -1059,8 +1081,8 @@ local function pattern_for(name)
   return patterns[name]
 end
 
-function M.headers_of(id, names, on_done)
-  run({ "search", "--output=files", id_query(id) }, function(ok, out)
+function M.headers_of(account, id, names, on_done)
+  run(account, { "search", "--output=files", id_query(id) }, function(ok, out)
     if not ok then
       return on_done(false, out)
     end
@@ -1107,19 +1129,17 @@ end
 -- asked. A day-old list of correspondents is not meaningfully worse than a
 -- fresh one.
 
-local addresses_path = nil
+-- One file per account: they are different people's correspondents.
+local function address_file(account)
+  local dir = vim.fn.stdpath("cache") .. "/leterejo"
+  vim.fn.mkdir(dir, "p")
 
-local function address_file()
-  if not addresses_path then
-    local dir = vim.fn.stdpath("cache") .. "/leterejo"
-    vim.fn.mkdir(dir, "p")
-    addresses_path = dir .. "/addresses.txt"
-  end
-  return addresses_path
+  local name = tostring(account or "default"):gsub("[^%w%-_]", "_")
+  return dir .. "/addresses-" .. name .. ".txt"
 end
 
-local function read_addresses()
-  local path = address_file()
+local function read_addresses(account)
+  local path = address_file(account)
   if vim.fn.filereadable(path) ~= 1 then
     return nil, nil
   end
@@ -1127,17 +1147,18 @@ local function read_addresses()
   return ok and lines or nil, vim.fn.getftime(path)
 end
 
-local refreshing = false
+-- One collection at a time per account.
+local refreshing = {}
 
 -- Collect them again, in the background.
-function M.refresh_addresses(on_done)
-  if refreshing then
+function M.refresh_addresses(account, on_done)
+  if refreshing[account or ""] then
     return
   end
-  refreshing = true
+  refreshing[account or ""] = true
 
   local opts = config.options.notmuch or {}
-  run({
+  run(account, {
     "address",
     "--output=recipients",
     "--output=sender",
@@ -1145,7 +1166,7 @@ function M.refresh_addresses(on_done)
     "--sort=newest-first",
     opts.address_query or "date:2years..",
   }, function(ok, out)
-    refreshing = false
+    refreshing[account or ""] = nil
     if not ok then
       return on_done and on_done(nil)
     end
@@ -1158,7 +1179,7 @@ function M.refresh_addresses(on_done)
       end
     end
 
-    pcall(vim.fn.writefile, found, address_file())
+    pcall(vim.fn.writefile, found, address_file(account))
     if on_done then
       on_done(found)
     end
@@ -1172,8 +1193,8 @@ end
 -- Answers from the file at once, so a picker opens without waiting, and starts
 -- a refresh when the file is old or missing. A refresh that finds more calls
 -- back a second time.
-function M.addresses(on_done)
-  local cached, when = read_addresses()
+function M.addresses(account, on_done)
+  local cached, when = read_addresses(account)
   local max_age = (config.options.notmuch or {}).address_max_age or 86400
   local stale = not when or (os.time() - when) > max_age
 
@@ -1203,7 +1224,7 @@ end
 -- and the sync that follows is what carries it up (see lieer.lua).
 
 -- Add and remove tags on one message.
-function M.tag(id, change, on_done)
+function M.tag(account, id, change, on_done)
   local args = { "tag" }
 
   for _, t in ipairs(change.add or {}) do
@@ -1222,15 +1243,15 @@ function M.tag(id, change, on_done)
   table.insert(args, "--")
   table.insert(args, id_query(id))
 
-  run(args, on_done)
+  run(account, args, on_done)
 end
 
 -- The tags one message carries now.
 --
 -- Used to check that a write survived the sync: lieer reverts a change it could
 -- not push, so the tag we set is the only honest evidence that it stuck.
-function M.tags_of(id, on_done)
-  run({ "search", "--format=json", "--output=tags", id_query(id) }, function(ok, out)
+function M.tags_of(account, id, on_done)
+  run(account, { "search", "--format=json", "--output=tags", id_query(id) }, function(ok, out)
     if not ok then
       return on_done(false, out)
     end
@@ -1297,8 +1318,8 @@ end
 -- Not every tag is a place: unread and attachment describe a message rather
 -- than say where it is, and offering them here would be offering to move mail
 -- into "unread". Those are listed in `mailbox_hidden_tags`.
-function M.tags(on_done)
-  run({ "search", "--format=json", "--output=tags", "*" }, function(ok, out)
+function M.tags(account, on_done)
+  run(account, { "search", "--format=json", "--output=tags", "*" }, function(ok, out)
     if not ok then
       return on_done(false, out)
     end

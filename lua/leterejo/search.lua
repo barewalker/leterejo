@@ -102,7 +102,7 @@ function M.count(account, mailbox, query, on_done)
     return on_done(true, nil)
   end
   local notmuch = require("leterejo.notmuch")
-  return notmuch.count(scoped_query(account, mailbox, ALIASES[query:lower()] or query), false, on_done)
+  return notmuch.count(account, scoped_query(account, mailbox, ALIASES[query:lower()] or query), false, on_done)
 end
 
 -- Run a query.
@@ -128,7 +128,7 @@ function M.run(account, mailbox, query, offset, limit, on_done)
   if SCANNED[query:lower()] then
     local want = query:lower()
     local cap = config.options.suspicious_scan_limit or 5000
-    return notmuch.list_at(notmuch.query_for(account, mailbox), 0, cap, function(ok, res)
+    return notmuch.list_at(account, notmuch.query_for(account, mailbox), 0, cap, function(ok, res)
       if not ok then
         return on_done(false, res, nil)
       end
@@ -146,7 +146,7 @@ function M.run(account, mailbox, query, offset, limit, on_done)
   end
 
   local scoped = scoped_query(account, mailbox, query)
-  return notmuch.list_at(scoped, offset or 0, limit or config.options.chunk_size, function(ok, res)
+  return notmuch.list_at(account, scoped, offset or 0, limit or config.options.chunk_size, function(ok, res)
     if not ok then
       return on_done(false, res, nil)
     end
