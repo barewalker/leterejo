@@ -87,7 +87,30 @@ local function preview_where()
 end
 
 local function previewing()
-  return preview_where() ~= nil
+  return state.preview_enabled ~= false and preview_where() ~= nil
+end
+
+-- Stop the body from following the cursor, or let it again.
+function M.toggle_preview()
+  if previewing() then
+    state.preview_enabled = false
+    state.preview_id = nil
+
+    local win = require("leterejo.ui.message").find_win()
+    if win and #vim.api.nvim_list_wins() > 1 then
+      vim.api.nvim_win_close(win, true)
+    end
+    return vim.notify(lang.t("preview_off"), vim.log.levels.INFO)
+  end
+
+  state.preview_enabled = true
+  if preview_where() == nil then
+    -- Turned on, but there is no room for it in a pane this shape.
+    return vim.notify(lang.t("preview_no_room"), vim.log.levels.WARN)
+  end
+
+  vim.notify(lang.t("preview_on"), vim.log.levels.INFO)
+  M.preview()
 end
 
 -- Layout --------------------------------------------------------------------
@@ -1159,6 +1182,7 @@ local function setup_keymaps(buf)
       end,
     },
     search = { desc = lang.t("desc_search"), handler = search },
+    preview = { desc = lang.t("desc_toggle_preview"), handler = M.toggle_preview },
     filters = { desc = lang.t("desc_filters"), handler = filters },
     clear_search = {
       desc = lang.t("desc_clear_search"),
@@ -1294,7 +1318,10 @@ function M.open()
   local buf = find_buf()
 
   if not buf then
-    buf = vim.api.nvim_create_buf(false, true)
+    -- Listed, so it appears wherever buffers are listed. It is a place the
+    -- reader goes back to, and one that cannot be reached from the buffer list
+    -- has to be reached by remembering a command instead.
+    buf = vim.api.nvim_create_buf(true, true)
     vim.api.nvim_buf_set_name(buf, BUFNAME)
     vim.bo[buf].buftype = "nofile"
     vim.bo[buf].bufhidden = "hide"

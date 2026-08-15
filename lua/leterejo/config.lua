@@ -360,6 +360,7 @@ M.defaults = {
       archive = "e", -- move to the archive mailbox
       spam = "S", -- move to the spam mailbox
       move = "M", -- move to a mailbox you pick
+      preview = "p", -- stop the body following the cursor, or let it again
       refresh = "u", -- refetch
       drafts = "D", -- open a saved draft
       -- Not "\\": that is the local leader in a common setup (LazyVim), where

@@ -35,6 +35,7 @@ local ORDER = {
     { "mailbox", "desc_mailbox" },
     { "tag", "desc_tag" },
     { "account", "desc_account" },
+    { "preview", "desc_toggle_preview" },
     { "refresh", "desc_refresh" },
     { "help", "desc_help" },
     { "close", "desc_close" },

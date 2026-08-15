@@ -228,6 +228,14 @@ end
 
 local function setup_keymaps(buf)
   local function close()
+    -- Closing the body while it was following the cursor means "stop
+    -- following": otherwise the next movement opens it again, and the window
+    -- cannot be closed at all, only argued with.
+    if state.preview_id ~= nil then
+      state.preview_enabled = false
+      state.preview_id = nil
+    end
+
     local win = find_win(buf)
     if win and #vim.api.nvim_list_wins() > 1 then
       vim.api.nvim_win_close(win, true)
@@ -394,7 +402,7 @@ function M.render(m, opts)
 
   local buf = find_buf()
   if not buf then
-    buf = vim.api.nvim_create_buf(false, true)
+    buf = vim.api.nvim_create_buf(true, true)
     vim.api.nvim_buf_set_name(buf, BUFNAME)
     vim.bo[buf].buftype = "nofile"
     -- Keep the buffer when the window closes so reopening is cheap.
@@ -439,6 +447,12 @@ end
 --                 overwrite the one for the row it is on now.
 function M.open(envelope, opts)
   opts = opts or {}
+
+  -- Asking for a body outright is asking for the pane back.
+  if not opts.quiet then
+    state.preview_enabled = nil
+  end
+
   local account, mailbox, id = state.account, state.mailbox, envelope.id
 
   local function stale()
