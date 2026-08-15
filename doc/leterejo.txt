@@ -1,0 +1,337 @@
+*leterejo.txt*    Mail in Neovim, read from a local index           *leterejo*
+
+A mail client that reads from a local notmuch index, changes state by tagging,
+and sends through himalaya. Mail is fetched by lieer, which syncs a Maildir
+against Gmail over its API.
+
+A list of fifty costs 37 ms and a body 10-20 ms, because nothing on the
+reading path leaves the machine.
+
+Japanese documentation: README.ja.md in the repository.
+
+==============================================================================
+CONTENTS                                                   *leterejo-contents*
+
+    1. Requirements ......................... |leterejo-requirements|
+    2. Setting up an account ................ |leterejo-setup|
+    3. Two silent failures .................. |leterejo-pitfalls|
+    4. Commands ............................. |leterejo-commands|
+    5. Mappings ............................. |leterejo-mappings|
+    6. Tags ................................. |leterejo-tags|
+    7. Filtering ............................ |leterejo-filtering|
+    8. Writing .............................. |leterejo-writing|
+    9. Accounts ............................. |leterejo-accounts|
+   10. Options .............................. |leterejo-options|
+   11. What it does not do .................. |leterejo-limitations|
+   12. Health .............................. |leterejo-health|
+
+==============================================================================
+1. REQUIREMENTS                                        *leterejo-requirements*
+
+    Neovim 0.10+     vim.system(), inline virtual text
+    notmuch          the index everything is read from
+    lieer (gmi)      fetches mail and carries changes back to Gmail
+    himalaya v2      sends
+    w3m              optional; renders mail with no plain-text part
+    snacks.nvim      optional; draws images the message carries
+    fzf-lua          optional; nicer pickers, and multiple selection on tags
+
+There is no IMAP path. Mail is on this machine or it is not readable.
+
+==============================================================================
+2. SETTING UP AN ACCOUNT                                      *leterejo-setup*
+
+Run |:checkhealth| leterejo first, and again after each step. It reports what
+is missing at any point.
+
+Step 1. Let the plugin prepare what it can: >
+
+    :LeterejoSetup work
+<
+This creates ~/Mail/work-lieer, writes ~/.config/notmuch/work naming it as
+that account's index, builds the empty index that lieer needs before it will
+open anything, and writes the wrapper described below. Nothing already there
+is overwritten.
+
+Step 2. Authorise and fetch. These want a browser and a password, so they are
+not run for you: >
+
+    leterejo-env work gmi init you@example.com
+    leterejo-env work gmi auth
+    leterejo-env work gmi set --timeout 60
+    leterejo-env work gmi set --no-remove-local-messages
+    leterejo-env work gmi pull
+<
+The order matters, and each step reads what the one before it wrote. Run bare,
+without `leterejo-env`, they read whichever account the default notmuch
+configuration names — which is another account's index.
+
+`gmi auth` opens a browser. Where the browser is elsewhere (a remote session),
+add --noauth_local_webserver and it prints a URL to visit and waits for the
+code.
+
+Step 3. Tell the plugin: >
+
+    require("leterejo").setup({
+      accounts = {
+        work = {
+          email = "you@example.com",
+          lieer_dir = "~/Mail/work-lieer",
+          notmuch_config = "~/.config/notmuch/work",
+        },
+      },
+      lieer = { interval = 5 },
+    })
+<
+himalaya needs its own configuration for sending; only its sending half is
+used.
+
+                                                         *leterejo-env-script*
+`leterejo-env <account> <command>...` runs something with that account's index
+and with XAPIAN_CJK_NGRAM=1, in that account's mail directory. Use it for
+every notmuch and gmi command typed by hand.
+
+==============================================================================
+3. TWO SILENT FAILURES                                     *leterejo-pitfalls*
+
+Both of these leave a setup that looks like it works.
+
+new.tags must be empty ~
+
+lieer applies notmuch's `new.tags` to every file it registers, on top of the
+labels Gmail gave. The default is "unread;inbox", which tags every message
+inbox and unread. Worse: a local tag Gmail does not have is offered to Gmail
+on the next push, so archiving one old message would put it back in the inbox.
+
+|:LeterejoSetup| writes an empty one. If mail was already fetched with a
+non-empty new.tags, emptying it only helps the next message — correcting what
+is already written takes a second `gmi pull --force`, because a partial pull
+only revisits what changed on Gmail.
+
+XAPIAN_CJK_NGRAM=1 on every call ~
+
+Without it a run of CJK is indexed as one term, so a word inside a longer one
+cannot be found. Two-character words still work, which hides it. The plugin
+passes it on every call it makes, and so does |leterejo-env-script|; a bare
+`notmuch new` or `gmi pull` does not.
+
+lieer registers what it fetched, so it is an indexer too. Running it without
+the variable writes messages that cannot be searched properly.
+
+==============================================================================
+4. COMMANDS                                                *leterejo-commands*
+
+                                                                   *:Leterejo*
+:Leterejo               Open the message list.
+
+                                                              *:LeterejoSetup*
+:LeterejoSetup {account}
+                        Prepare an account: its mail directory, its notmuch
+                        configuration, an empty index, and the wrapper script.
+                        Prints the steps left to run. Overwrites nothing.
+
+                                                               *:LeterejoSync*
+:LeterejoSync           Fetch mail now and read the list again.
+
+                                                             *:LeterejoUnlock*
+:LeterejoUnlock [account]
+                        Open the password store in a terminal buffer, before
+                        sending needs it. pinentry draws on the terminal
+                        Neovim is holding, so a prompt raised by a child of
+                        Neovim cannot be typed into; this gives it a terminal
+                        of its own.
+
+==============================================================================
+5. MAPPINGS                                                *leterejo-mappings*
+
+In the list (`filetype=leterejo-envelopes`):
+
+    <CR>    open the message           t    put tags on, take them off
+    r  R    reply, reply the other way  M    move to another tag
+    f  c    forward, write a new one    m    switch tag
+    s  F    read/unread, flag           a    switch account
+    e       archive (-inbox)            /    filter
+    d  S    trash, spam                 g/   pick a filter
+    A       attachments                <Esc> clear the filter
+    D       saved drafts                p    body follows the cursor, or not
+    l  h    open, close a conversation  u    fetch and read again
+    <Tab>   toggle a conversation       ?    the keys
+                                        q    close
+
+In the message body: r R f A, s F e d S M as above, plus >
+
+    h       show or fold the headers
+    w       wrap long lines, or not
+    q <Esc> back to the list
+<
+While writing:  >
+
+    <leader>hs      send
+    <leader>hw      save the draft here (:w does the same)
+    <leader>hu      file the draft on the server
+    <leader>ha      suggest an address, or a file in the Attach field
+    <leader>hg      choose a signature
+    <leader>hq      discard
+<
+Every one of these is `keymaps` in |leterejo-options|; set one to false to
+leave it unbound.
+
+==============================================================================
+6. TAGS                                                        *leterejo-tags*
+
+A tag is a Gmail label, and a mailbox is a tag. There is nothing else: no
+folders, and no state that is not a tag.
+
+    read            -unread
+    archive         -inbox
+    trash           +trash -inbox
+    spam            +spam -inbox
+    flag            +flagged
+    move            +<chosen> -<the one being looked at>
+
+A message carries as many tags as apply, so `t` puts them on and takes them
+off, showing what the message already has. With fzf-lua several can be marked
+and applied as one change. A name not in the list can be typed: Gmail creates
+the label when the change is pushed.
+
+                                                         *leterejo-tag-safety*
+A change is written to the index at once, then pushed with `gmi sync`, then
+read back. lieer refuses to push onto a remote that has moved on, and the pull
+in the same run puts the old tags back — so a sync exiting zero is not proof
+the change arrived. Where it did not survive, it is applied once more against
+the state that just landed, and if that fails too it is undone locally and
+said so. Otherwise the index would keep claiming something Gmail does not.
+
+==============================================================================
+7. FILTERING                                              *leterejo-filtering*
+
+`/` takes a query; `g/` offers the ones worth having on a key. An empty `/`
+opens the same list. Queries are notmuch's, with two additions:
+
+    is:suspicious   the sender shown is not the sender sent (a direction
+                    control in the name). Not in the index — computed while
+                    drawing — so this reads the mailbox back and the header
+                    says how many were examined
+    is:obfuscated   zero-width padding in the sender or subject
+
+The older shape "subject foo" is accepted as well as "subject:foo".
+
+==============================================================================
+8. WRITING                                                  *leterejo-writing*
+
+The header area is a form. Each line holds one field's value; the name beside
+it is drawn, not typed, so it cannot be deleted or mistyped, and a rule marks
+where the body starts. In that area <CR> moves to the next field, `dd` clears
+one, and Backspace at the start of a field does nothing — joining two fields
+would silently shift every value below.
+
+From decides which account carries the message: an address belongs to the
+account that owns it, which is the server allowed to send for it. An address
+no account owns keeps the account the draft names, which is the alias case.
+
+Drafts are files under stdpath("state"), saved by `:w`. Sending is its own key
+and nothing else does it. `<leader>hu` also files a copy on the server for
+reaching from elsewhere.
+
+Replies are assembled here — himalaya's `message reply` wants an id the index
+does not have — with the recipients from the original, one "Re:", the quote in
+the buffer where it can be cut down, and In-Reply-To/References to keep it in
+its thread. A forward carries what the original carried, in the Attach field.
+
+==============================================================================
+9. ACCOUNTS                                                *leterejo-accounts*
+
+Each account has its own lieer repository and its own notmuch index. They
+cannot share one: tags are that account's labels, both accounts have an
+`inbox`, and notmuch merges by Message-ID — so a message addressed to both
+would carry the union of their labels, and the next push would offer each of
+them the other's.
+
+Per-account options, under `accounts.<name>`:
+
+    email               your address there. himalaya v2 will not send without
+                        it, and reply-all uses it to drop you from the list
+    lieer_dir           the lieer repository
+    notmuch_config      the notmuch configuration naming its index
+    send_only           somewhere to send from, with nothing to read. Kept out
+                        of the account list
+    readonly            refuse every operation that would change mail
+    unlock_command      how to open the password store, e.g.
+                        { "pass", "show", "mail/work" }
+    sent_mailbox        where to keep a copy of what it sends. Leave unset for
+                        a provider that files sent mail itself, as Gmail does
+    draft_mailbox       where `<leader>hu` files a draft
+    templates           what a new message opens with, per kind
+    signature           what a message ends with
+    queries             mailbox name -> a notmuch query, for a view that is
+                        not a tag
+    folders             mailbox name -> a Maildir directory
+
+==============================================================================
+10. OPTIONS                                                 *leterejo-options*
+
+Set through `require("leterejo").setup({...})`. Every option is documented
+where it is defined, in lua/leterejo/config.lua; these are the ones most often
+wanted.
+
+lang            "en" or "ja". The interface. message_lang    The wording that
+goes into mail — the line above a quote, the
+                headers over a forwarded message. Separate from the interface
+                because the recipient reads it. Default "en".
+quote           headline, prefix, forwarded_head, forwarded_headers, labels.
+                What the sender writes rather than what is built in.
+templates       compose/reply/forward. {name} {email} {subject} {date} are
+                filled in.
+signature       What every message ends with, under the RFC 3676 delimiter.
+signatures      Named signatures to choose between with <leader>hg.
+message_id_domain
+                "from" (default) puts the sending domain in the Message-ID,
+                where himalaya would put this machine's hostname; false leaves
+                himalaya's.
+auto_bcc        Addresses to Bcc automatically, keyed by account or by the
+                address in From.
+lieer.interval  Minutes between fetches; 0 for none. lieer.dir       The
+repository, when one account covers everything. threads         One row per
+conversation (true) or per message (false). thread_order    "oldest" or
+"newest" inside an opened conversation. preview         false, "below",
+"right", or "auto" — which measures the pane
+                rather than the terminal.
+tags            The tags standing for unread, flagged, inbox, trash, spam.
+mailbox_hidden_tags
+                Tags that are not places, so not offered as somewhere to move
+                mail into.
+filters         The filters `g/` offers. notmuch.html_renderer
+                How mail with no plain-text part is made readable. Over half
+                of the mail measured here was of that kind.
+notmuch.repair_headers
+                Read the subject and sender from the message file rather than
+                trust notmuch's decoding, which stops at the first encoded
+                word. Default true.
+attachment_handlers
+                How a saved attachment is opened, per MIME type.
+download_dir    Where attachments are saved. nil means ~/Downloads.
+inline_images   Draw images the message carries. Never the remote ones.
+
+==============================================================================
+11. WHAT IT DOES NOT DO                                 *leterejo-limitations*
+
+    - No IMAP. Reading is the local index or nothing
+    - No Gmail tabs. lieer drops CATEGORY_* by default, so the inbox holds
+      everything Gmail labels INBOX, not what the web client shows under
+      Primary
+    - Nothing writes to Gmail except tagging and sending: no filters, no
+      settings, no permanent delete
+    - No AI. Drafting through a model is described in the design notes but
+      not built
+
+==============================================================================
+12. HEALTH                                                   *leterejo-health*
+
+`:checkhealth leterejo` reports what this configuration needs and what is
+actually there: the programs, each account's index (and whether two share
+one), each lieer repository (and whether its timeout is still the silent ten
+minutes), the HTML renderer, and whether the terminal reports a pixel size —
+without which images fail silently, because the size to draw at comes out zero
+and everything else reports success.
+
+vim:tw=78:ts=8:noet:ft=help:norl:
