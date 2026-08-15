@@ -139,6 +139,10 @@ local FIELDS = {
   { key = "cc", label = "Cc" },
   { key = "bcc", label = "Bcc" },
   { key = "subject", label = "Subject" },
+  -- Files to send with it, separated by commas. Filled in by a forward, from
+  -- what the original carried; anything else can be added by hand or by the
+  -- suggestion key, which offers a file browser here rather than an address.
+  { key = "attach", label = "Attach" },
 }
 
 local HEADER_LINES = #FIELDS
@@ -455,6 +459,15 @@ local function assemble(strict)
 
   table.insert(args, "--body=" .. body)
 
+  -- What goes with it. himalaya reads the file, so a path that is gone by then
+  -- is its error to report rather than something to hide here.
+  for _, path in ipairs(vim.split(values.attach or "", ",", { plain = true })) do
+    path = vim.trim(path)
+    if path ~= "" then
+      table.insert(args, "--attach=" .. vim.fn.expand(path))
+    end
+  end
+
   -- What keeps a reply in its thread. Not something himalaya can be told, so
   -- it is put into the message after it has built it.
   local extra = {}
@@ -550,9 +563,13 @@ function M.send()
   local function done()
     vim.notify(lang.t("sent"), vim.log.levels.INFO)
 
-    -- The draft has been sent, so it is no longer a draft.
+    -- The draft has been sent, so it is no longer a draft, and the copies
+    -- taken out of the index to attach have done their work.
     if pending and pending.draft then
       os.remove(pending.draft)
+    end
+    if pending and pending.temporary then
+      vim.fn.delete(pending.temporary, "rf")
     end
     pending = nil
 
@@ -676,6 +693,9 @@ local function discard()
       if pending and pending.draft then
         os.remove(pending.draft)
       end
+      if pending and pending.temporary then
+        vim.fn.delete(pending.temporary, "rf")
+      end
       pending = nil
       vim.bo[buf].modified = false
       vim.api.nvim_buf_delete(buf, { force = true })
@@ -781,7 +801,7 @@ end
 --
 -- From is filled in from the account being read; editing it is what chooses
 -- the route, since an address belongs to the account that owns it.
-local function form_values(account, to, cc, subject)
+local function form_values(account, to, cc, subject, attach)
   local from = ((config.options.accounts or {})[account] or {}).email or ""
   local auto = (config.options.auto_bcc or {})[from] or (config.options.auto_bcc or {})[account]
 
@@ -791,6 +811,7 @@ local function form_values(account, to, cc, subject)
     cc = cc or "",
     bcc = auto or "",
     subject = subject or "",
+    attach = attach or "",
   }
 end
 
@@ -1021,6 +1042,24 @@ function M.suggest()
   -- was a moment ago.
   local prompt = lang.t("pick_address") .. " → " .. label
   local pick = require("leterejo.pickers").pick
+
+  -- In the attachment field the question is which file, not which person.
+  if key == "attach" then
+    return vim.ui.input({
+      prompt = lang.t("attach_prompt"),
+      default = vim.fn.expand("~") .. "/",
+      completion = "file",
+    }, function(input)
+      input = input and vim.trim(input) or ""
+      if input == "" then
+        return
+      end
+      if vim.fn.filereadable(vim.fn.expand(input)) ~= 1 then
+        return vim.notify(lang.e("attach_missing", input), vim.log.levels.WARN)
+      end
+      put_address(buf, row, input)
+    end)
+  end
 
   if key == "from" then
     local items = {}
@@ -1406,6 +1445,23 @@ end
 -- himalaya's own forward would have carried them, but it needs the backend's
 -- id for that, and what this holds is a Message-ID. Saying so is better than a
 -- forward that quietly arrives without the file it was about.
+-- Where a forwarded message's attachments are put on the way through.
+--
+-- They have to exist as files for himalaya to attach them, and they are not
+-- the user's copies — saving them into the download directory would leave a
+-- forwarded PDF sitting there for every message passed on. So: somewhere
+-- temporary, named after the message, cleared when the message goes.
+local function forward_dir(id)
+  local digest = vim.fn.sha256(tostring(id)):sub(1, 16)
+  return vim.fn.stdpath("cache") .. "/leterejo/forward/" .. digest
+end
+
+-- Forward.
+--
+-- The message is written out below what the sender adds, headed by the lines a
+-- reader needs to know whose message it was, and what it carried is carried
+-- with it: taken out of the index into a temporary directory and named in the
+-- Attach field, where it can be seen and any of it removed before sending.
 function M.forward(envelope)
   local account = state.account or lang.t("account_default")
 
@@ -1414,7 +1470,7 @@ function M.forward(envelope)
     subject = "Fwd: " .. subject
   end
 
-  local function open(original, body)
+  local function open(original, body, attach)
     stash()
 
     pending = {
@@ -1422,6 +1478,8 @@ function M.forward(envelope)
       id = envelope.id,
       mailbox = state.mailbox,
       original_subject = subject,
+      -- Cleared once it has gone or been discarded.
+      temporary = #attach > 0 and forward_dir(envelope.id) or nil,
     }
 
     local lines = body_lines(account, "forward", envelope)
@@ -1442,15 +1500,19 @@ function M.forward(envelope)
       vim.list_extend(lines, quoted("", body))
     end
 
-    open_buffer(form_values(account, "", "", subject), lines)
+    open_buffer(form_values(account, "", "", subject, table.concat(attach, ", ")), lines)
+
+    if #attach > 0 then
+      vim.notify(lang.t("forward_attachments", #attach), vim.log.levels.INFO)
+    end
   end
 
-  local original, body
-  local headers_done, body_done = false, false
+  local original, body, attach
+  local headers_done, body_done, files_done = false, false, false
 
   local function ready()
-    if headers_done and body_done then
-      open(original, body)
+    if headers_done and body_done and files_done then
+      open(original, body, attach or {})
     end
   end
 
@@ -1469,8 +1531,22 @@ function M.forward(envelope)
     ready()
   end)
 
-  if envelope["has-attachment"] then
-    vim.notify(lang.t("forward_no_attachments"), vim.log.levels.WARN)
+  if not envelope["has-attachment"] then
+    attach = {}
+    files_done = true
+    ready()
+  else
+    notmuch.save_attachments(state.account, envelope.id, forward_dir(envelope.id), function(ok, res)
+      attach = {}
+      for _, saved in ipairs(ok and (res.attachments or {}) or {}) do
+        table.insert(attach, saved.path)
+      end
+      if not ok then
+        vim.notify(lang.e("forward_attachments_failed"), vim.log.levels.WARN)
+      end
+      files_done = true
+      ready()
+    end)
   end
 end
 
