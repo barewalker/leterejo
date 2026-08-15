@@ -23,13 +23,19 @@ local GROUPS = {
   -- The row naming the columns.
   LeterejoColumns = { link = "Comment" },
 
-  -- The three marker columns. Each has its own group because they mean very
+  -- The marker columns. Each has its own group because they mean very
   -- different things: one is a state, one is a choice the user made, and one
   -- is a warning.
   LeterejoUnreadMark = { link = "Special" },
   LeterejoFlaggedMark = { link = "WarningMsg" },
   LeterejoAttachMark = { link = "Constant" },
   LeterejoSuspectMark = { link = "ErrorMsg" },
+
+  -- Rows picked out to be acted on together. Visual is what the editor already
+  -- uses to say "these ones", and it is a background rather than a colour, so
+  -- the column reads as a run of blocks down the left rather than as more
+  -- punctuation among the markers.
+  LeterejoSelectedMark = { link = "Visual" },
 
   -- The columns themselves.
   LeterejoDate = { link = "Comment" },

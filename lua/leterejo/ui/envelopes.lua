@@ -46,12 +46,71 @@ local function threaded()
   return not (state.query or config.options.threads == false)
 end
 
+-- Order ----------------------------------------------------------------------
+
+-- The orders notmuch cannot give, arranged here instead.
+--
+-- notmuch sorts by date and by nothing else, so ordering by sender or subject
+-- means reading the list in whole and arranging it. Returns the order when it
+-- is one of those, and nil when the index is doing the ordering itself.
+local function ordered_here()
+  local order = state.sorting()
+  return (order == "from" or order == "subject") and order or nil
+end
+
+-- What a row sorts under.
+--
+-- Read off the row rather than fetched, so the order is one that can be checked
+-- by looking at the screen: the sender column is the sender it sorted on.
+local function from_key(e)
+  return util.strip_invisible(util.address_label(e.from)):lower()
+end
+
+-- The subject with the reply and forward prefixes taken off, so that a message
+-- and the replies to it land together rather than under R and F. Japanese mail
+-- carries 転送: and Re: in the same header often enough to strip both, and a
+-- long thread piles them up, so this runs until nothing more comes off.
+local function subject_key(e)
+  local s = util.strip_invisible(e.subject or "")
+
+  while true do
+    local shorter = s:gsub("^%s*[%(%[]?%s*[Rr][Ee]%s*[%(%[]?%d*[%)%]]?%s*[:：]%s*", "")
+    shorter = shorter:gsub("^%s*[Ff][Ww][Dd]?%s*[:：]%s*", "")
+    shorter = shorter:gsub("^%s*[転返][送信]%s*[:：]%s*", "")
+    if shorter == s then
+      break
+    end
+    s = shorter
+  end
+
+  return s:lower()
+end
+
+-- Newest first within one sender, or one subject: the second key is always the
+-- date, because two rows that sort the same still have to sort somehow, and any
+-- other answer would shuffle on every redraw.
+local function comparator(order)
+  local key = order == "from" and from_key or subject_key
+
+  return function(a, b)
+    local ka, kb = key(a), key(b)
+    if ka ~= kb then
+      return ka < kb
+    end
+    return tostring(a.date or "") > tostring(b.date or "")
+  end
+end
+
 -- Whether more rows can be asked for as the cursor nears the end.
 --
 -- A plain list always can. A filtered one asks the search: a query the index
 -- answers resumes at an offset, but a scan already read as far as it was going
--- to and has nothing left to hand over.
+-- to and has nothing left to hand over. An order the index cannot give was
+-- arranged from the whole list at once, so there is nothing after it either.
 local function growable()
+  if ordered_here() then
+    return false
+  end
   if state.query then
     return require("leterejo.search").resumable(state.query.text)
   end
@@ -183,6 +242,22 @@ local function render_header()
     b.add(lang.t("count", #state.envelopes), "LeterejoHeaderCount")
   end
 
+  -- The order, unless it is the one every mail list has by default. Saying
+  -- "newest first" on every screen forever teaches nothing; saying "by sender"
+  -- explains a list that is not in the order the eye expects.
+  if state.sorting() ~= "newest" then
+    b.add("  ")
+    b.add(lang.t("sorted_by", lang.t("sort_" .. state.sorting())), "LeterejoHeaderNote")
+  end
+
+  -- How many rows are picked out. The marks say which; this says how many,
+  -- which is the number that matters before pressing d.
+  local picked = #state.selection()
+  if picked > 0 then
+    b.add("  ")
+    b.add(lang.t("selected_count", picked), "LeterejoHeaderCount")
+  end
+
   -- While filtering, state the reach as well as the query. A scan only saw a
   -- recent slice, and hiding that invites misreading the result.
   if state.query then
@@ -257,6 +332,14 @@ local function render_row(e, width)
   local from, bidi_a = util.strip_invisible(util.address_label(e.from))
   local subject, bidi_b = util.strip_invisible(e.subject or lang.t("no_subject"))
   local unread = util.is_unseen(e)
+
+  -- Picked out to be acted on together. First, and its own cell: it is the one
+  -- marker that says what the next key will do rather than what the message is.
+  if state.is_selected(e.id) then
+    b.add("#", "LeterejoSelectedMark")
+  else
+    b.add(" ")
+  end
 
   if bidi_a + bidi_b > 0 then
     b.add("!", "LeterejoSuspectMark")
@@ -469,23 +552,18 @@ end
 -- Fetching -------------------------------------------------------------------
 
 local function fetch_batch(account, mailbox, offset, limit, on_done)
+  -- An order notmuch cannot give still has to arrive in some order before it
+  -- can be put in another; it asks for newest-first and sorts afterwards.
+  local sort = state.sorting()
+
   if state.query then
-    return require("leterejo.search").run(
-      account,
-      mailbox,
-      state.query.text,
-      offset,
-      limit,
-      function(ok, res)
-        on_done(ok, res)
-      end
-    )
+    return require("leterejo.search").run(account, mailbox, state.query.text, offset, limit, sort, on_done)
   end
   local query = notmuch.query_for(account, mailbox)
   if threaded() then
-    return notmuch.list_threads(account, query, offset, limit, on_done)
+    return notmuch.list_threads(account, query, offset, limit, sort, on_done)
   end
-  return notmuch.list_at(account, query, offset, limit, on_done)
+  return notmuch.list_at(account, query, offset, limit, sort, on_done)
 end
 
 -- Ask for the next batch. Guarded so a burst of cursor movement cannot start
@@ -642,6 +720,103 @@ local function load_search(buf)
   end)
 end
 
+-- Read the whole list in, and put it in an order the index cannot give.
+--
+-- Counted first. Past the limit the answer is to say so and go back to date
+-- order: sorting the part that happens to have been read would be a list
+-- claiming an order it does not have, which is the one thing worse than not
+-- offering the order at all. Filtering first is what makes these usable on a
+-- large mailbox, and is usually the real question anyway.
+local function load_whole(buf)
+  local account, mailbox = state.account, state.mailbox
+  local order = state.sorting()
+  local text = state.query and state.query.text
+
+  local query = state.query
+  state.reset_list()
+  state.query = query
+  if threaded() then
+    state.threads = {}
+  end
+  redraw(buf)
+
+  -- Whether this is still the list that was asked for.
+  local function ours()
+    return state.account == account
+      and state.mailbox == mailbox
+      and (state.query and state.query.text) == text
+      and state.sorting() == order
+  end
+
+  local function count(on_done)
+    if text then
+      return require("leterejo.search").count(account, mailbox, text, on_done)
+    end
+    return notmuch.count(account, notmuch.query_for(account, mailbox), threaded(), on_done)
+  end
+
+  count(function(ok, total)
+    if not ours() then
+      return
+    end
+    if not ok then
+      state.envelopes = {}
+      redraw(buf)
+      return vim.notify(lang.t("prefix") .. tostring(total), vim.log.levels.ERROR)
+    end
+
+    local cap = config.options.sort_scan_limit or 2000
+    if total and total > cap then
+      vim.notify(lang.e("sort_too_many", total, cap), vim.log.levels.WARN)
+      state.sort = "newest"
+      return M.refresh()
+    end
+
+    if total == 0 then
+      state.envelopes, state.total = {}, 0
+      return redraw(buf)
+    end
+
+    vim.notify(lang.t("sort_reading"), vim.log.levels.INFO)
+    state.loading = true
+
+    -- A scan reports no total — it reads a slice and looks at it — so it is
+    -- asked for its own limit and what comes back is what there is.
+    local limit = total or config.options.suspicious_scan_limit or 5000
+
+    fetch_batch(account, mailbox, 0, limit, function(ok2, rows, info)
+      state.loading = false
+      if not ours() then
+        return
+      end
+      if not ok2 then
+        state.envelopes = {}
+        redraw(buf)
+        return vim.notify(lang.t("prefix") .. tostring(rows), vim.log.levels.ERROR)
+      end
+
+      table.sort(rows, comparator(order))
+
+      state.loaded, state.total = #rows, #rows
+      if state.query then
+        state.query.index = info and info.index
+        state.query.scanned = info and info.scanned
+      end
+
+      if threaded() then
+        state.threads = rows
+        rebuild()
+      else
+        state.envelopes = rows
+      end
+
+      redraw(buf)
+      place_cursor(buf)
+      M.preview()
+    end)
+  end)
+end
+
 -- Redraw from what is already held, without fetching anything.
 --
 -- Used after an operation that changed a message: the row is corrected in place
@@ -707,6 +882,10 @@ function M.refresh()
     return
   end
 
+  -- An order the index cannot give is read in whole, filtered or not.
+  if ordered_here() then
+    return load_whole(buf)
+  end
   if state.query then
     return load_search(buf)
   end
@@ -977,6 +1156,7 @@ local function setup_keymaps(buf)
       end
 
       state.query = { text = input }
+      state.clear_selection()
       state.reset_list()
       M.refresh()
     end)
@@ -1037,30 +1217,56 @@ local function setup_keymaps(buf)
       end
 
       state.query = query ~= CLEAR and { text = query } or nil
+      state.clear_selection()
       state.reset_list()
       M.refresh()
     end)
   end
 
-  -- Put a tag on the message under the cursor, or take one off.
+  -- What an operation acts on: the rows picked out, or the one under the
+  -- cursor when none are.
   --
-  -- The ones it already carries are marked and listed first, so the same key
-  -- both adds and removes without asking which is meant. A name that is not in
-  -- the list yet can be typed: Gmail makes the label when the change is
-  -- pushed, so there is nowhere else to create one.
-  local function tag_message()
+  -- Nothing gets a second key for "do this to the selection". An action means
+  -- the same thing either way, and a pair of keys for one verb is a pair to
+  -- keep straight at the moment mail is being deleted.
+  local function targets()
+    local picked = state.selection()
+    if #picked > 0 then
+      return picked
+    end
     local e = envelope_under_cursor()
-    if not e then
+    return e and { e } or {}
+  end
+
+  -- Put a tag on what is being acted on, or take one off.
+  --
+  -- The ones already carried are marked and listed first, so the same key both
+  -- adds and removes without asking which is meant. A name that is not in the
+  -- list yet can be typed: Gmail makes the label when the change is pushed, so
+  -- there is nowhere else to create one.
+  --
+  -- With several messages in hand a tag has three states rather than two, and
+  -- only "every one of them has it" counts as on: choosing a tag some of them
+  -- carry puts it on the rest, which is the reading that lets one key make the
+  -- selection agree.
+  local function tag_message()
+    local list = targets()
+    if #list == 0 then
       return
     end
 
-    notmuch.tags_of(state.account, e.id, function(ok, tags)
+    local ids = {}
+    for _, e in ipairs(list) do
+      table.insert(ids, e.id)
+    end
+
+    notmuch.tags_of_many(state.account, ids, function(ok, union, shared)
       if not ok then
-        return vim.notify(lang.t("prefix") .. tostring(tags), vim.log.levels.ERROR)
+        return vim.notify(lang.t("prefix") .. tostring(union), vim.log.levels.ERROR)
       end
 
       local carried = {}
-      for _, t in ipairs(tags) do
+      for _, t in ipairs(union) do
         carried[t] = true
       end
 
@@ -1072,13 +1278,20 @@ local function setup_keymaps(buf)
         local items, name_of = {}, {}
 
         local function offer(name)
-          local line = (carried[name] and lang.t("tag_on") or lang.t("tag_off")) .. name
+          local mark = lang.t("tag_off")
+          if shared[name] then
+            mark = lang.t("tag_on")
+          elseif carried[name] then
+            mark = lang.t("tag_some")
+          end
+
+          local line = mark .. name
           table.insert(items, line)
           name_of[line] = name
         end
 
-        -- What it already has, then everything else.
-        for _, t in ipairs(tags) do
+        -- What they already have, then everything else.
+        for _, t in ipairs(union) do
           offer(t)
         end
         for _, t in ipairs(all) do
@@ -1091,14 +1304,16 @@ local function setup_keymaps(buf)
         table.insert(items, lang.t("tag_new"))
         name_of[lang.t("tag_new")] = NEW
 
-        require("leterejo.pickers").pick(items, lang.t("pick_tag"), function(lines)
+        local prompt = #list > 1 and lang.t("pick_tag_many", #list) or lang.t("pick_tag")
+
+        require("leterejo.pickers").pick(items, prompt, function(lines)
           local add, remove, make_new = {}, {}, false
 
           for _, line in ipairs(lines) do
             local name = name_of[line]
             if name == NEW then
               make_new = true
-            elseif name and carried[name] then
+            elseif name and shared[name] then
               table.insert(remove, name)
             elseif name then
               table.insert(add, name)
@@ -1106,9 +1321,15 @@ local function setup_keymaps(buf)
           end
 
           local actions = require("leterejo.actions")
+          local function go()
+            if #list == 1 then
+              return actions.change_tags(list[1], add, remove)
+            end
+            actions.many.change_tags(list, add, remove)
+          end
 
           if not make_new then
-            return actions.change_tags(e, add, remove)
+            return go()
           end
 
           -- Ask for the new one, then send everything as a single change.
@@ -1116,10 +1337,99 @@ local function setup_keymaps(buf)
             if input and vim.trim(input) ~= "" then
               table.insert(add, vim.trim(input))
             end
-            actions.change_tags(e, add, remove)
+            go()
           end)
         end, { multi = true })
       end)
+    end)
+  end
+
+  -- Pick the row under the cursor out, or put it back, and step down so a run
+  -- of them can be taken with one key rather than two.
+  local function select_row()
+    local e = envelope_under_cursor()
+    if not e then
+      return
+    end
+
+    state.toggle_selected(e.id)
+    M.redraw()
+
+    local win = list_win(buf)
+    if win then
+      local row = vim.api.nvim_win_get_cursor(win)[1]
+      if row < header_height() + #(state.envelopes or {}) then
+        pcall(vim.api.nvim_win_set_cursor, win, { row + 1, 0 })
+      end
+    end
+  end
+
+  -- The same over the lines a motion covered.
+  --
+  -- The whole range goes one way rather than each row flipping: a range that
+  -- already holds a mixture would otherwise come out as the opposite mixture,
+  -- which is nobody's intention. Everything picked out means put it all back;
+  -- anything else means pick it all out.
+  local function select_range()
+    -- '< and '> are only set once visual mode has been left, so leave it first.
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<esc>", true, false, true), "nx", false)
+
+    local list = state.envelopes or {}
+    local first = math.max(vim.fn.line("'<") - header_height(), 1)
+    local last = math.min(vim.fn.line("'>") - header_height(), #list)
+    if first > last then
+      return
+    end
+
+    local all_picked = true
+    for i = first, last do
+      if not state.is_selected(list[i].id) then
+        all_picked = false
+        break
+      end
+    end
+
+    for i = first, last do
+      if all_picked or not state.is_selected(list[i].id) then
+        state.toggle_selected(list[i].id)
+      end
+    end
+
+    M.redraw()
+  end
+
+  local function select_key()
+    local mode = vim.fn.mode()
+    if mode == "v" or mode == "V" or mode == "\22" then
+      return select_range()
+    end
+    return select_row()
+  end
+
+  -- Change the order the list is in.
+  local ORDERS = { "newest", "oldest", "from", "subject" }
+
+  local function pick_sort()
+    local items, order_of = {}, {}
+
+    for _, order in ipairs(ORDERS) do
+      local line = (state.sorting() == order and lang.t("tag_on") or lang.t("tag_off"))
+        .. lang.t("sort_" .. order)
+      table.insert(items, line)
+      order_of[line] = order
+    end
+
+    require("leterejo.pickers").pick(items, lang.t("pick_sort"), function(line)
+      local order = order_of[line]
+      if not order or order == state.sorting() then
+        return
+      end
+
+      -- The selection is by message id, so it survives the reordering: the
+      -- same rows are picked out, in another place on the screen.
+      state.sort = order
+      state.reset_list()
+      M.refresh()
     end)
   end
 
@@ -1133,9 +1443,19 @@ local function setup_keymaps(buf)
     end
   end
 
+  -- An action on whatever is being acted on: the selection as one change, or
+  -- the row under the cursor.
   local function act(name)
     return function()
-      require("leterejo.actions")[name](envelope_under_cursor())
+      local picked = state.selection()
+      if #picked > 0 then
+        return require("leterejo.actions").many[name](picked)
+      end
+
+      local e = envelope_under_cursor()
+      if e then
+        require("leterejo.actions")[name](e)
+      end
     end
   end
 
@@ -1184,9 +1504,20 @@ local function setup_keymaps(buf)
     search = { desc = lang.t("desc_search"), handler = search },
     preview = { desc = lang.t("desc_toggle_preview"), handler = M.toggle_preview },
     filters = { desc = lang.t("desc_filters"), handler = filters },
+    select = { desc = lang.t("desc_select"), handler = select_key, modes = { "n", "x" } },
+    sort = { desc = lang.t("desc_sort"), handler = pick_sort },
     clear_search = {
       desc = lang.t("desc_clear_search"),
       handler = function()
+        -- The selection first. It is the more recent thing to have wanted
+        -- undone, and clearing the filter would take the rows it names off the
+        -- screen with it — leaving a count in the heading for messages that are
+        -- no longer anywhere to be seen.
+        if next(state.selected) then
+          state.clear_selection()
+          return M.redraw()
+        end
+
         if state.query then
           state.query = nil
           state.reset_list()
@@ -1254,7 +1585,9 @@ M.HINTS = {
   { "toggle_seen", "hint_seen" },
   { "trash", "hint_trash" },
   { "archive", "hint_archive" },
+  { "select", "hint_select" },
   { "search", "hint_search" },
+  { "sort", "hint_sort" },
   { "filters", "hint_filters" },
   { "mailbox", "hint_mailbox" },
   { "tag", "hint_tag" },

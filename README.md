@@ -117,10 +117,21 @@ In the list:
 | `e` `d` `S` | archive, trash, spam |
 | `t` `M` | put tags on or take them off, move to another tag |
 | `m` `a` | switch tag, switch account |
-| `/` `g/` `<esc>` | filter, pick a filter, clear |
+| `x` `o` | pick this row out (visual: the range), change the order |
+| `/` `g/` `<esc>` | filter, pick a filter, clear the selection then the filter |
 | `A` `D` | attachments, saved drafts |
 | `p` `u` `?` `q` | preview on/off, fetch and reload, keys, close |
 | `l` `h` `<tab>` | open, close, toggle a conversation |
+
+Every action works on the rows picked out with `x` when there are any,
+and on the row under the cursor when there are none — so there is no second key
+for "do this to the selection". A change to fifty is one tagging call and one
+push, not fifty syncs.
+
+Order: newest and oldest first are the index's own doing and hold for a mailbox
+of any size. By sender and by subject are not — notmuch sorts by date and
+nothing else — so those read the list in whole and are refused past
+`sort_scan_limit` rather than sorting the part that happened to have arrived.
 
 Writing: `<leader>hs` sends, `<leader>hw` (or `:w`) saves the draft,
 `<leader>hu` files it on the server, `<leader>ha` suggests an address,
@@ -131,8 +142,11 @@ original carried, in the Attach field.
 ## What it does not do
 
 - **No IMAP.** Reading is the local index or nothing
-- **No Gmail tabs.** lieer drops `CATEGORY_*` by default, so the inbox holds
-  everything Gmail labels `INBOX`, not what the web client shows under Primary
+- **The inbox is not Gmail's Primary tab**, and will not become it. It holds
+  everything Gmail labels `INBOX`. To keep the tabs, `gmi set
+  --ignore-tags-remote ""` and one full pull files them as ordinary tags, and
+  `g/` offers a Primary-equivalent view — but a classifier's guess is a filter
+  you reach for, not the default that decides what you never see
 - **Nothing writes to Gmail except tagging and sending.** No filters, no
   settings, no delete-for-real
 
@@ -150,6 +164,7 @@ wanted:
 | `message_lang` | the wording that goes *into* mail (quote lines, forward headers) |
 | `templates`, `signature`, `signatures`, `quote` | what a new message opens with |
 | `lieer.interval` | minutes between fetches; 0 for none |
+| `sort`, `sort_scan_limit` | the order the list starts in, and how far the two orders notmuch cannot give may read |
 | `preview`, `preview_min_width` | whether the body follows the cursor |
 | `attachment_handlers` | how a saved attachment is opened |
 

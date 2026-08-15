@@ -106,6 +106,9 @@ end
 function M.pick_mailbox()
   M.pick_mailbox_name(lang.t("pick_mailbox"), function(name)
     state.mailbox = name
+    -- Rows picked out here are not on the screen we are going to, and a
+    -- selection nobody can see is one the next key would act on unannounced.
+    state.clear_selection()
     state.reset_list()
     require("leterejo.ui.envelopes").refresh()
   end)
@@ -135,6 +138,7 @@ function M.pick_account()
       state.account = name
       -- Tag names differ per account, so fall back to the inbox.
       state.mailbox = "inbox"
+      state.clear_selection()
       state.reset_list()
       require("leterejo.ui.envelopes").refresh()
 

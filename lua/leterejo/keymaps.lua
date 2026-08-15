@@ -72,6 +72,11 @@ end
 
 -- Bind `actions` (action name -> handler) on `buf` per configuration.
 --   scope is "envelopes", "message" or "compose".
+--
+-- An action may name the modes it wants; normal mode is what everything else
+-- uses. `modes` carries the key rather than the configuration because it is a
+-- property of the action — picking rows out over a motion is the same action in
+-- either mode — and not something to rebind.
 function M.apply(buf, scope, actions)
   local spec = (config.options.keymaps or {})[scope] or {}
 
@@ -80,12 +85,14 @@ function M.apply(buf, scope, actions)
 
     -- false leaves it unbound; a missing entry is treated the same.
     if type(lhs) == "string" and lhs ~= "" then
-      vim.keymap.set("n", lhs, fn.handler, {
-        buffer = buf,
-        nowait = true,
-        silent = true,
-        desc = "leterejo: " .. (fn.desc or name),
-      })
+      for _, mode in ipairs(fn.modes or { "n" }) do
+        vim.keymap.set(mode, lhs, fn.handler, {
+          buffer = buf,
+          nowait = true,
+          silent = true,
+          desc = "leterejo: " .. (fn.desc or name),
+        })
+      end
     end
   end
 end

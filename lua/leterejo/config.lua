@@ -50,6 +50,33 @@ M.defaults = {
   -- user asked for behind a collapsed parent.
   threads = true,
 
+  -- The order the list is drawn in.
+  --
+  --   "newest"   newest first
+  --   "oldest"   oldest first
+  --   "from"     by sender
+  --   "subject"  by subject, with Re: and Fwd: ignored so a conversation and
+  --              its replies land together
+  --
+  -- The first two are the index's own doing, so they cost nothing and hold for
+  -- the whole mailbox however large. The other two are not: notmuch sorts by
+  -- date and by nothing else, so ordering by sender means reading the list in
+  -- whole and arranging it here — which is honest only while the list is small
+  -- enough to read in. See sort_scan_limit.
+  --
+  -- This is the starting order; the `sort` key changes it for the list in front
+  -- of you, the way a filter does, and switching mailbox keeps it.
+  sort = "newest",
+
+  -- How many messages may be read in to order them by sender or by subject.
+  --
+  -- Past this the order stays by date and the reason is said out loud, rather
+  -- than sorting the part that happens to have been read and letting a list
+  -- claim an order it does not have. Filtering first is what makes those orders
+  -- usable on a large mailbox — and is usually what was wanted anyway: "in this
+  -- account, by sender" is a question about a few hundred messages.
+  sort_scan_limit = 2000,
+
   -- Which way an opened conversation reads.
   --
   --   "oldest"  oldest message first, the way a conversation happened
@@ -202,8 +229,27 @@ M.defaults = {
   -- markers are computed while drawing, from invisible characters Xapian never
   -- indexed — so they are read back and examined. That is the one filter here
   -- that costs real time, and the header says how many were looked at.
+  -- Gmail's tabs are labels like any other, and are kept when lieer has been
+  -- told to stop dropping them (`gmi set --ignore-tags-remote ""`). They are
+  -- offered here as one view rather than made the meaning of the inbox: the
+  -- classification is Gmail's guess, and a default that hides two thirds of
+  -- what arrived on someone else's guess is the one thing a local client
+  -- should not do — there are no tabs on a list to notice it with.
+  --
+  -- The tags are `promotions` and the rest, not `CATEGORY_PROMOTIONS`: lieer
+  -- renames Gmail's labels on the way in, the same way `STARRED` arrives as
+  -- `flagged`. Written as a subtraction rather than `tag:personal`, because a
+  -- message Gmail never classified carries no category at all — 7,404 of the
+  -- 31,429 in one inbox here, which is mail from before the tabs existed and
+  -- anything a filter delivered straight past them. The positive form drops
+  -- those without saying so; this one keeps them.
   filters = {
     { query = "is:unread", describe = "filter_unread" },
+    {
+      query = "tag:inbox and not tag:promotions and not tag:updates "
+        .. "and not tag:social and not tag:forums",
+      describe = "filter_primary",
+    },
     { query = "is:flagged", describe = "filter_flagged" },
     { query = "has:attachment", describe = "filter_attachment" },
     { query = "is:suspicious", describe = "filter_suspicious" },
@@ -229,11 +275,17 @@ M.defaults = {
     -- which tab a message was filed under, which is a fact about it rather
     -- than a place to put one — and Gmail decides them, so putting one on by
     -- hand means offering Gmail a label it will disagree with.
-    "CATEGORY_PERSONAL",
-    "CATEGORY_SOCIAL",
-    "CATEGORY_PROMOTIONS",
-    "CATEGORY_UPDATES",
-    "CATEGORY_FORUMS",
+    --
+    -- lieer renames them on the way in: CATEGORY_PROMOTIONS arrives as
+    -- `promotions`, the way STARRED arrives as `flagged`. Which means a label
+    -- of your own called `personal` would land on the same tag as Gmail's tab
+    -- and be hidden here with it — rename yours if that happens, since the
+    -- collision is in the index and not something this can tell apart.
+    "personal",
+    "social",
+    "promotions",
+    "updates",
+    "forums",
   },
 
   -- Pushing what changed here up to Gmail.
@@ -424,6 +476,18 @@ M.defaults = {
       archive = "e", -- move to the archive mailbox
       spam = "S", -- move to the spam mailbox
       move = "M", -- move to a mailbox you pick
+      -- Pick rows out to act on together. Every operation above works on the
+      -- selection when there is one and on the row under the cursor when there
+      -- is not, so nothing has a second key. Also bound in visual mode, where
+      -- it takes the lines the motion covered.
+      --
+      -- Not <Space>: it is the leader in a common setup (LazyVim), and a
+      -- buffer-local mapping of it with nowait fires before the second key can
+      -- be typed — every <leader> mapping would stop working in the list. x is
+      -- free here, since the buffer cannot be edited, and is what a checkbox
+      -- gets ticked with elsewhere.
+      select = "x",
+      sort = "o", -- change the order the list is in
       preview = "p", -- stop the body following the cursor, or let it again
       refresh = "u", -- refetch
       drafts = "D", -- open a saved draft
@@ -519,13 +583,17 @@ M.defaults = {
 
   -- Column widths, in display cells. The subject takes whatever is left.
   --
-  --   markers : unread / flagged / attachment, one cell each
+  --   markers : picked out / unread / flagged / attachment, one cell each
   --   date    : "MM-DD HH:MM" needs 11, "YYYY-MM-DD" needs 10
   --   from    : a Japanese company name runs past 24 more often than not, so
   --             widen this on a wide screen
   --   thread  : the count on a collapsed conversation, "v123"
+  --
+  -- The first marker cell stays blank until something is picked out, rather
+  -- than appearing then: a column that arrives with the first selection would
+  -- shift every subject one cell to the right at the moment the eye is on them.
   columns = {
-    markers = 3,
+    markers = 4,
     date = 11,
     from = 24,
     thread = 4,
