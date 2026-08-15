@@ -120,6 +120,34 @@ M.defaults = {
   -- saving.
   templates = {},
 
+  -- How the original appears inside a reply or a forward.
+  --
+  -- Everything here is optional; unset means the wording built in, written in
+  -- `message_lang`. These lines are read by whoever receives the message, so
+  -- they are worth writing yourself if the built-in wording is not how you
+  -- would put it.
+  --
+  --   headline         the line above the quote. {date} {name} {email}
+  --                    {address} {subject} are filled in, as in `templates`
+  --   headline_no_name the same, for a message whose sender has no name
+  --   prefix           what each quoted line begins with
+  --   forwarded_head   the line that opens a forwarded message
+  --   forwarded_headers which of the original's headers to list under it
+  --   labels           what to call them
+  --
+  -- e.g. quote = {
+  --        headline = "{date} に {name} さんは書きました:",
+  --        prefix = "| ",
+  --      }
+  quote = {
+    headline = nil,
+    headline_no_name = nil,
+    prefix = "> ",
+    forwarded_head = nil,
+    forwarded_headers = { "from", "date", "subject", "to", "cc" },
+    labels = nil,
+  },
+
   -- What every message ends with. A string, or a list of lines.
   --
   -- Put in the buffer under the "-- " delimiter mail has used for this since
