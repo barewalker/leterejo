@@ -8,6 +8,13 @@ vim.api.nvim_create_user_command("Leterejo", function()
   require("leterejo").open()
 end, { desc = "Open the message list" })
 
+-- Preparing an account: the directory, the index and its configuration, and
+-- the wrapper for running notmuch and gmi by hand. What needs a browser and a
+-- password is printed rather than run.
+vim.api.nvim_create_user_command("LeterejoSetup", function(opts)
+  require("leterejo.setup").account(opts.args)
+end, { nargs = 1, desc = "Prepare an account's mail directory and index" })
+
 -- Fetching mail without opening the list first.
 vim.api.nvim_create_user_command("LeterejoSync", function()
   require("leterejo.ui.envelopes").sync()
