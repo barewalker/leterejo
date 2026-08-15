@@ -110,11 +110,13 @@ end
 --   offset, limit: honoured for anything the index answers; a scan returns one
 --                  batch whatever the offset says, so callers check
 --                  M.resumable first.
+--   sort         : the order to ask the index for. The ones it cannot give are
+--                  arranged by the list buffer afterwards.
 --
 --   on_done(ok, envelopes, info)
 --     info.index   = the index answered, covering every message
 --     info.scanned = how many messages were examined by a scan
-function M.run(account, mailbox, query, offset, limit, on_done)
+function M.run(account, mailbox, query, offset, limit, sort, on_done)
   query = vim.trim(query or "")
   if query == "" then
     return on_done(false, nil, nil)
@@ -128,7 +130,7 @@ function M.run(account, mailbox, query, offset, limit, on_done)
   if SCANNED[query:lower()] then
     local want = query:lower()
     local cap = config.options.suspicious_scan_limit or 5000
-    return notmuch.list_at(account, notmuch.query_for(account, mailbox), 0, cap, function(ok, res)
+    return notmuch.list_at(account, notmuch.query_for(account, mailbox), 0, cap, sort, function(ok, res)
       if not ok then
         return on_done(false, res, nil)
       end
@@ -146,7 +148,7 @@ function M.run(account, mailbox, query, offset, limit, on_done)
   end
 
   local scoped = scoped_query(account, mailbox, query)
-  return notmuch.list_at(account, scoped, offset or 0, limit or config.options.chunk_size, function(ok, res)
+  return notmuch.list_at(account, scoped, offset or 0, limit or config.options.chunk_size, sort, function(ok, res)
     if not ok then
       return on_done(false, res, nil)
     end

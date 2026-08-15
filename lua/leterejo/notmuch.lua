@@ -305,7 +305,26 @@ local function id_query(id)
   return 'id:"' .. tostring(id):gsub('"', '\\"') .. '"'
 end
 
--- Fetch a run of envelopes for a query, newest first, starting at an offset.
+-- The orders notmuch itself can put a result in.
+--
+-- Two of its four are no use to a reader: `message-id` and `unsorted` order a
+-- list by nothing that is on the screen. The orders that are missing — by
+-- sender, by subject — are not notmuch's to give at all: it sorts by date and
+-- by nothing else. Those are done here, over a list that has been read whole,
+-- which is why they are handled in the list buffer rather than passed down.
+local NOTMUCH_SORT = {
+  newest = "newest-first",
+  oldest = "oldest-first",
+}
+
+-- The flag for an order, falling back to newest-first for the ones notmuch
+-- cannot give: the rows still have to arrive in some defined order before they
+-- can be sorted into another.
+function M.sort_flag(sort)
+  return NOTMUCH_SORT[sort] or "newest-first"
+end
+
+-- Fetch a run of envelopes for a query, starting at an offset.
 --
 -- Two calls: the first settles which messages and in what order, the second
 -- fetches their headers. `show` groups by thread and would otherwise lose the
@@ -313,7 +332,7 @@ end
 --
 -- Addressed by offset rather than by page: the list grows as it is scrolled and
 -- knows how many rows it holds, not which page it is on.
-function M.list_at(account, query, offset, size, on_done)
+function M.list_at(account, query, offset, size, sort, on_done)
   offset = offset or 0
   size = size or 50
 
@@ -321,7 +340,7 @@ function M.list_at(account, query, offset, size, on_done)
     "search",
     "--format=json",
     "--output=messages",
-    "--sort=newest-first",
+    "--sort=" .. M.sort_flag(sort),
     "--offset=" .. offset,
     "--limit=" .. size,
     query,
@@ -439,7 +458,7 @@ local function authors_of(authors)
   return out
 end
 
--- Fetch one batch of threads for a query, newest first.
+-- Fetch one batch of threads for a query.
 --
 -- One call, unlike the message listing: `search` summarises each thread with
 -- everything a row needs — subject, who took part, how many messages, the tags
@@ -450,12 +469,12 @@ end
 -- it orders a thread's messages oldest first. Checked against every
 -- multi-message thread in a 9,000-message inbox, but fall back to the first id
 -- rather than nothing if a future version disagrees.
-function M.list_threads(account, query, offset, limit, on_done)
+function M.list_threads(account, query, offset, limit, sort, on_done)
   run(account, {
     "search",
     "--format=json",
     "--output=summary",
-    "--sort=newest-first",
+    "--sort=" .. M.sort_flag(sort),
     "--offset=" .. tostring(offset or 0),
     "--limit=" .. tostring(limit or 200),
     query,
@@ -1214,6 +1233,12 @@ function M.addresses(account, on_done)
   end)
 end
 
+-- Quote a name for use in a query. Gmail labels carry slashes, dots and spaces,
+-- all of which the query parser would otherwise read as syntax.
+local function quoted(prefix, name)
+  return prefix .. '"' .. tostring(name):gsub('"', '\\"') .. '"'
+end
+
 -- Tags ------------------------------------------------------------------
 --
 -- Everything that changes a message changes a tag, and nothing else. Gmail has
@@ -1223,16 +1248,22 @@ end
 -- None of this reaches Gmail. It edits the index, in single-digit milliseconds,
 -- and the sync that follows is what carries it up (see lieer.lua).
 
+-- The `+tag -tag` arguments a change is made of.
+local function tag_flags(change)
+  local flags = {}
+  for _, t in ipairs(change.add or {}) do
+    table.insert(flags, "+" .. t)
+  end
+  for _, t in ipairs(change.remove or {}) do
+    table.insert(flags, "-" .. t)
+  end
+  return flags
+end
+
 -- Add and remove tags on one message.
 function M.tag(account, id, change, on_done)
   local args = { "tag" }
-
-  for _, t in ipairs(change.add or {}) do
-    table.insert(args, "+" .. t)
-  end
-  for _, t in ipairs(change.remove or {}) do
-    table.insert(args, "-" .. t)
-  end
+  vim.list_extend(args, tag_flags(change))
 
   if #args == 1 then
     return on_done(true, "")
@@ -1244,6 +1275,146 @@ function M.tag(account, id, change, on_done)
   table.insert(args, id_query(id))
 
   run(account, args, on_done)
+end
+
+-- Several messages at once ------------------------------------------------
+--
+-- A selection is one change, not one change per message. Tagging fifty rows one
+-- at a time would be fifty processes and — far worse — fifty syncs, and a sync
+-- is the part that takes a minute and can be refused. So the ids are named in
+-- one query and the whole selection goes up in a single push.
+
+-- The ids as query fragments, in groups small enough to hand to a process.
+--
+-- The same limit as the listing: a few thousand ids in one argument exceeds
+-- what the kernel accepts and the spawn fails with E2BIG.
+local function id_groups(ids)
+  local GROUP = 250
+  local out = {}
+
+  for start = 1, #ids, GROUP do
+    local parts = {}
+    for i = start, math.min(start + GROUP - 1, #ids) do
+      table.insert(parts, id_query(ids[i]))
+    end
+    table.insert(out, table.concat(parts, " or "))
+  end
+
+  return out
+end
+
+-- Run one notmuch call per group, one after another.
+--
+-- Sequential rather than at once because a write takes Xapian's lock: two
+-- `notmuch tag` processes on one index means the second fails outright rather
+-- than waiting its turn. Reads would be safe in parallel, but a handful of
+-- groups is milliseconds either way and one path is easier to trust than two.
+local function per_group(account, ids, args_for, on_done)
+  local groups = id_groups(ids)
+  local results = {}
+
+  local function step(i)
+    if i > #groups then
+      return on_done(true, results)
+    end
+
+    run(account, args_for(groups[i]), function(ok, out)
+      if not ok then
+        return on_done(false, out)
+      end
+      table.insert(results, out)
+      step(i + 1)
+    end)
+  end
+
+  step(1)
+end
+
+-- Add and remove tags on every message named.
+function M.tag_many(account, ids, change, on_done)
+  local flags = tag_flags(change)
+  if #flags == 0 or #ids == 0 then
+    return on_done(true, "")
+  end
+
+  per_group(account, ids, function(group)
+    local args = { "tag" }
+    vim.list_extend(args, flags)
+    table.insert(args, "--")
+    table.insert(args, group)
+    return args
+  end, function(ok, res)
+    on_done(ok, ok and "" or res)
+  end)
+end
+
+-- The messages of a set that a change did not reach.
+--
+-- Asked as one query rather than by reading each message's tags back: the only
+-- thing needed is which of these are not as we asked, and the index says that
+-- directly. Returns nil when there is nothing to test for.
+local function missed_in(group, change)
+  local terms = {}
+
+  for _, t in ipairs(change.add or {}) do
+    table.insert(terms, "not " .. quoted("tag:", t))
+  end
+  for _, t in ipairs(change.remove or {}) do
+    table.insert(terms, quoted("tag:", t))
+  end
+
+  if #terms == 0 then
+    return nil
+  end
+  return "(" .. group .. ") and (" .. table.concat(terms, " or ") .. ")"
+end
+
+-- How many of these messages the change did not reach.
+function M.count_missed(account, ids, change, on_done)
+  if #ids == 0 or missed_in("*", change) == nil then
+    return on_done(true, 0)
+  end
+
+  per_group(account, ids, function(group)
+    return { "count", "--output=messages", missed_in(group, change) }
+  end, function(ok, results)
+    if not ok then
+      return on_done(false, results)
+    end
+
+    local total = 0
+    for _, out in ipairs(results) do
+      total = total + (tonumber(vim.trim(out)) or 0)
+    end
+    on_done(true, total)
+  end)
+end
+
+-- Write tags onto exactly the messages a change did not reach.
+--
+-- Both of the things done about a refused push need this. Trying again means
+-- setting `change` on the ones that do not have it; giving up means taking it
+-- back out of them — and only out of them, since the rest of the selection did
+-- go through and un-archiving forty messages because ten failed would be a
+-- worse answer than the failure.
+--
+--   missed : the change that was asked for, and is being tested for
+--   write  : what to put on the ones that did not take it
+function M.tag_missed(account, ids, missed, write, on_done)
+  local flags = tag_flags(write)
+  if #flags == 0 or #ids == 0 or missed_in("*", missed) == nil then
+    return on_done(true, "")
+  end
+
+  per_group(account, ids, function(group)
+    local args = { "tag" }
+    vim.list_extend(args, flags)
+    table.insert(args, "--")
+    table.insert(args, missed_in(group, missed))
+    return args
+  end, function(ok, res)
+    on_done(ok, ok and "" or res)
+  end)
 end
 
 -- The tags one message carries now.
@@ -1263,13 +1434,59 @@ function M.tags_of(account, id, on_done)
   end)
 end
 
--- Mailboxes -------------------------------------------------------------
+-- The tags a set of messages carries, and which of them all of it carries.
+--
+-- Two answers rather than one, because with several messages in hand there are
+-- three states and not two: every one of them has the tag, some do, none do.
+-- One `show` reports every message's tags, so this costs a single call however
+-- many are named.
+--
+--   on_done(ok, union, shared)   union = list, shared = set
+function M.tags_of_many(account, ids, on_done)
+  if #ids == 0 then
+    return on_done(true, {}, {})
+  end
 
--- Quote a name for use in a query. Gmail labels carry slashes, dots and spaces,
--- all of which the query parser would otherwise read as syntax.
-local function quoted(prefix, name)
-  return prefix .. '"' .. tostring(name):gsub('"', '\\"') .. '"'
+  local counted, seen, union = {}, 0, {}
+
+  per_group(account, ids, function(group)
+    return { "show", "--format=json", "--body=false", "--entire-thread=false", group }
+  end, function(ok, results)
+    if not ok then
+      return on_done(false, results)
+    end
+
+    for _, out in ipairs(results) do
+      local decoded_ok, tree = pcall(vim.json.decode, vim.trim(out) ~= "" and out or "[]")
+      if not decoded_ok then
+        return on_done(false, lang.t("err_notmuch"))
+      end
+
+      for _, msg in ipairs(collect_messages(tree, {})) do
+        seen = seen + 1
+        for _, t in ipairs(msg.tags or {}) do
+          if counted[t] == nil then
+            counted[t] = 0
+            table.insert(union, t)
+          end
+          counted[t] = counted[t] + 1
+        end
+      end
+    end
+
+    local shared = {}
+    for t, n in pairs(counted) do
+      if n == seen then
+        shared[t] = true
+      end
+    end
+
+    table.sort(union)
+    on_done(true, union, shared)
+  end)
 end
+
+-- Mailboxes -------------------------------------------------------------
 
 -- Turn a mailbox name into a query.
 --
@@ -1355,7 +1572,7 @@ end
 --
 --   on_done(ok, names, is_view)
 function M.mailboxes(account, on_done)
-  M.tags(function(ok, tags)
+  M.tags(account, function(ok, tags)
     if not ok then
       return on_done(false, tags)
     end

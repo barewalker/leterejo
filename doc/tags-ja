@@ -12,8 +12,10 @@ leterejo-health	leterejo.jax	/*leterejo-health*
 leterejo-limitations	leterejo.jax	/*leterejo-limitations*
 leterejo-mappings	leterejo.jax	/*leterejo-mappings*
 leterejo-options	leterejo.jax	/*leterejo-options*
+leterejo-order	leterejo.jax	/*leterejo-order*
 leterejo-pitfalls	leterejo.jax	/*leterejo-pitfalls*
 leterejo-requirements	leterejo.jax	/*leterejo-requirements*
+leterejo-selection	leterejo.jax	/*leterejo-selection*
 leterejo-setup	leterejo.jax	/*leterejo-setup*
 leterejo-tag-safety	leterejo.jax	/*leterejo-tag-safety*
 leterejo-tags	leterejo.jax	/*leterejo-tags*

@@ -146,17 +146,51 @@ the variable writes messages that cannot be searched properly.
 
 In the list (`filetype=leterejo-envelopes`):
 
-    <CR>    open the message           t    put tags on, take them off
-    r  R    reply, reply the other way  M    move to another tag
-    f  c    forward, write a new one    m    switch tag
-    s  F    read/unread, flag           a    switch account
-    e       archive (-inbox)            /    filter
-    d  S    trash, spam                 g/   pick a filter
-    A       attachments                <Esc> clear the filter
-    D       saved drafts                p    body follows the cursor, or not
-    l  h    open, close a conversation  u    fetch and read again
-    <Tab>   toggle a conversation       ?    the keys
-                                        q    close
+    <CR>    open the message            t     put tags on, take them off
+    r  R    reply, reply the other way  M     move to another tag
+    f  c    forward, write a new one    m     switch tag
+    s  F    read/unread, flag           a     switch account
+    e       archive (-inbox)            /     filter
+    d  S    trash, spam                 g/    pick a filter
+    x       pick this row out           o     change the order
+    A       attachments                 <Esc> clear the selection, then filter
+    D       saved drafts                p     body follows the cursor, or not
+    l  h    open, close a conversation  u     fetch and read again
+    <Tab>   toggle a conversation       ?     the keys
+                                        q     close
+
+                                                          *leterejo-selection*
+`x` picks the row out and steps down, so a run of them is one key held rather
+than two alternated. In visual mode it takes the lines the motion covered, all
+one way: a range that already holds a mixture is picked out entirely rather
+than inverted. Not `<Space>`, which is the leader in a common setup and would
+stop being one inside the list.
+
+Every action then works on what is picked out, and on the row under the cursor
+when nothing is. Nothing has a second key for "do this to the selection" —
+`d` is `d`, and the heading says how many it is about before it is pressed.
+A selection survives sorting and the five-minute fetch, because it is held by
+message id rather than by row; switching mailbox or account clears it, and so
+does `<Esc>`.
+
+A change to several is one change: they are tagged in one call and pushed
+once. Fifty messages would otherwise be fifty syncs, and the sync is the part
+that takes real time and can be refused. If it is refused for some of them,
+only those are put back — see |leterejo-tag-safety|.
+
+                                                              *leterejo-order*
+`o` changes the order the list is in. Newest first and oldest first are the
+index's own doing, so they cost nothing and hold for the whole mailbox however
+large it is. By sender and by subject are not: notmuch sorts by date and by
+nothing else, so those read the list in whole and arrange it here. Past
+`sort_scan_limit` (2,000) they are refused and the reason is said out loud,
+rather than sorting the part that happened to have arrived and calling that
+the order. Filter first — "in this account, by sender" is usually a question
+about a few hundred messages.
+
+By subject ignores `Re:`, `Fwd:` and 転送:, however many have piled up, so a
+message and the replies to it land together. The order is shown in the heading
+whenever it is not the usual one, and switching mailbox keeps it.
 
 In the message body: r R f A, s F e d S M as above, plus >
 
@@ -213,6 +247,13 @@ opens the same list. Queries are notmuch's, with two additions:
                     drawing — so this reads the mailbox back and the header
                     says how many were examined
     is:obfuscated   zero-width padding in the sender or subject
+
+Gmail's tabs are labels, named `promotions` and the rest — lieer renames them
+on the way in, as it does STARRED into `flagged`. `g/` offers the inbox with
+the other tabs taken out of it. The subtraction is deliberate: a message Gmail
+never classified carries no tab at all, and asking for `tag:personal` instead
+would lose it (7,404 of 31,429 here). The tabs are a view and never what the
+inbox means — see |leterejo-limitations|.
 
 The older shape "subject foo" is accepted as well as "subject:foo".
 
@@ -274,8 +315,8 @@ Set through `require("leterejo").setup({...})`. Every option is documented
 where it is defined, in lua/leterejo/config.lua; these are the ones most often
 wanted.
 
-lang            "en" or "ja". The interface. message_lang    The wording that
-goes into mail — the line above a quote, the
+lang            "en" or "ja". The interface.
+message_lang    The wording that goes into mail — the line above a quote, the
                 headers over a forwarded message. Separate from the interface
                 because the recipient reads it. Default "en".
 quote           headline, prefix, forwarded_head, forwarded_headers, labels.
@@ -290,17 +331,23 @@ message_id_domain
                 himalaya's.
 auto_bcc        Addresses to Bcc automatically, keyed by account or by the
                 address in From.
-lieer.interval  Minutes between fetches; 0 for none. lieer.dir       The
-repository, when one account covers everything. threads         One row per
-conversation (true) or per message (false). thread_order    "oldest" or
-"newest" inside an opened conversation. preview         false, "below",
-"right", or "auto" — which measures the pane
+lieer.interval  Minutes between fetches; 0 for none.
+lieer.dir       The repository, when one account covers everything.
+threads         One row per conversation (true) or per message (false).
+thread_order    "oldest" or "newest" inside an opened conversation.
+sort            "newest", "oldest", "from" or "subject" — the order the list
+                starts in. `o` changes it for the list in front of you.
+sort_scan_limit How many messages may be read in to order them by sender or by
+                subject, which notmuch cannot do. Past this the order stays by
+                date and says why. Default 2,000.
+preview         false, "below", "right", or "auto" — which measures the pane
                 rather than the terminal.
 tags            The tags standing for unread, flagged, inbox, trash, spam.
 mailbox_hidden_tags
                 Tags that are not places, so not offered as somewhere to move
                 mail into.
-filters         The filters `g/` offers. notmuch.html_renderer
+filters         The filters `g/` offers.
+notmuch.html_renderer
                 How mail with no plain-text part is made readable. Over half
                 of the mail measured here was of that kind.
 notmuch.repair_headers
@@ -316,9 +363,12 @@ inline_images   Draw images the message carries. Never the remote ones.
 11. WHAT IT DOES NOT DO                                 *leterejo-limitations*
 
     - No IMAP. Reading is the local index or nothing
-    - No Gmail tabs. lieer drops CATEGORY_* by default, so the inbox holds
-      everything Gmail labels INBOX, not what the web client shows under
-      Primary
+    - The inbox is not Gmail's Primary tab, and will not become it. It holds
+      everything Gmail labels INBOX. To keep the tabs, `gmi set
+      --ignore-tags-remote ""` and one full pull file them as ordinary tags,
+      and `g/` offers a Primary-equivalent view — but a classifier's guess is
+      a filter to reach for, not the default that decides what is never seen.
+      A list has no tabs along the top to notice the missing two thirds with
     - Nothing writes to Gmail except tagging and sending: no filters, no
       settings, no permanent delete
     - No AI. Drafting through a model is described in the design notes but

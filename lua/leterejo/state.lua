@@ -59,7 +59,55 @@ local M = {
   -- Active filter, or nil when not filtering.
   -- { text = "...", server = true|false, scanned = N }
   query = nil,
+
+  -- The order the list is in, or nil for the configured one.
+  --
+  -- Kept here rather than in the configuration because it is a thing done to
+  -- the list on screen, like a filter: chosen for one look at one mailbox and
+  -- changed again a moment later.
+  sort = nil,
+
+  -- Message id -> true, for the rows picked out to be acted on together.
+  --
+  -- Ids rather than row numbers, so a reload that brings new mail in above them
+  -- does not silently move the selection onto other messages.
+  selected = {},
 }
+
+-- The order in force: what was chosen for this list, else what was configured.
+function M.sorting()
+  return M.sort or config.options.sort or "newest"
+end
+
+-- Selection -----------------------------------------------------------------
+
+function M.is_selected(id)
+  return M.selected[tostring(id)] == true
+end
+
+function M.toggle_selected(id)
+  local key = tostring(id)
+  M.selected[key] = not M.selected[key] or nil
+end
+
+function M.clear_selection()
+  M.selected = {}
+end
+
+-- The selected rows, in the order they are drawn.
+--
+-- Read from the list rather than kept as a second list of its own: a message
+-- that has been archived out of the view is no longer something an action can
+-- be aimed at, and deriving this means there is nowhere for the two to disagree.
+function M.selection()
+  local out = {}
+  for _, e in ipairs(M.envelopes or {}) do
+    if M.is_selected(e.id) then
+      table.insert(out, e)
+    end
+  end
+  return out
+end
 
 -- Forget everything about the list currently held.
 --
