@@ -3,6 +3,7 @@
 -- Either list can run to dozens of entries, so fzf-lua is used when present
 -- and vim.ui.select otherwise.
 local cli = require("leterejo.cli")
+local config = require("leterejo.config")
 local lang = require("leterejo.lang")
 local state = require("leterejo.state")
 
@@ -122,7 +123,6 @@ function M.pick_account()
     -- never synced here has nothing of its own to show: switching to it would
     -- draw the same messages under a different name, with a read-only marker
     -- that appears to be about them.
-    local config = require("leterejo.config")
     local readable = {}
     for _, name in ipairs(res) do
       local a = (config.options.accounts or {})[name] or {}
@@ -133,11 +133,24 @@ function M.pick_account()
 
     select(readable, lang.t("pick_account"), function(name)
       state.account = name
-      -- Mailbox names differ per account (Gmail renames its special
-      -- folders with the display language), so fall back to the inbox.
+      -- Tag names differ per account, so fall back to the inbox.
       state.mailbox = "inbox"
       state.reset_list()
       require("leterejo.ui.envelopes").refresh()
+
+      -- An account with nothing of its own draws the index anyway, which is
+      -- another account's mail under this one's name. Say so: it looks like
+      -- the switch worked, and every count and every write would be about
+      -- someone else's mailbox.
+      local a = (config.options.accounts or {})[name] or {}
+      local has_own = a.lieer_dir
+        or (config.options.lieer or {}).dir
+        or (a.queries and next(a.queries))
+        or (a.folders and next(a.folders))
+
+      if not has_own then
+        vim.notify(lang.e("account_not_synced", name), vim.log.levels.WARN)
+      end
     end)
   end)
 end
