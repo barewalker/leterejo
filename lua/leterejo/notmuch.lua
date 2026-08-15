@@ -578,7 +578,7 @@ local function pipe_through(cmd, input, on_done)
 end
 
 -- Find the first text/html part of a message.
-local function html_part_id(id, on_done)
+local function html_part_id(account, id, on_done)
   run_json(account, {
     "show",
     "--format=json",
@@ -705,7 +705,7 @@ function M.read(account, id, on_done)
     end
     renderer = M.render_width(renderer)
 
-    html_part_id(id, function(part)
+    html_part_id(account, id, function(part)
       if not part then
         return raw(on_done)
       end
@@ -785,7 +785,7 @@ local function names_in(path)
 end
 
 -- Ask notmuch which files hold this message.
-local function files_of(id, on_done)
+local function files_of(account, id, on_done)
   run(account, { "search", "--output=files", id_query(id) }, function(ok, out)
     if not ok then
       return on_done({})
@@ -802,7 +802,7 @@ local function files_of(id, on_done)
 end
 
 -- Put back what notmuch cut off, where it can be found.
-local function repaired(id, attachments, on_done)
+local function repaired(account, id, attachments, on_done)
   local damaged = false
   for _, att in ipairs(attachments) do
     damaged = damaged or looks_cut(att.name)
@@ -812,7 +812,7 @@ local function repaired(id, attachments, on_done)
     return on_done(true, attachments)
   end
 
-  files_of(id, function(paths)
+  files_of(account, id, function(paths)
     local candidates = {}
     for _, path in ipairs(paths) do
       vim.list_extend(candidates, names_in(path))
@@ -888,7 +888,7 @@ function M.attachments(account, id, on_done)
       end
     end
     walk(tree)
-    repaired(id, found, on_done)
+    repaired(account, id, found, on_done)
   end)
 end
 
@@ -1001,7 +1001,7 @@ function M.save_attachments(account, id, dir, on_done)
   dir = vim.fn.expand(dir or "~/Downloads")
   vim.fn.mkdir(dir, "p")
 
-  M.attachments(id, function(ok, atts)
+  M.attachments(account, id, function(ok, atts)
     if not ok then
       return on_done(false, atts)
     end
@@ -1201,13 +1201,13 @@ function M.addresses(account, on_done)
   if cached and #cached > 0 then
     on_done(cached, stale)
     if stale then
-      M.refresh_addresses(function() end)
+      M.refresh_addresses(account, function() end)
     end
     return
   end
 
   on_done({}, true)
-  M.refresh_addresses(function(found)
+  M.refresh_addresses(account, function(found)
     if found and #found > 0 then
       on_done(found, false)
     end
