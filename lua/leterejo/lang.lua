@@ -36,6 +36,9 @@ strings.en = {
   search_hint = "%s to change, %s to clear",
   scope_local = "from the latest %d",
   scope_index = "whole index",
+  preview_on = "The body follows the cursor",
+  preview_off = "The body stays closed",
+  preview_no_room = "No room for it in a pane this size",
   searching = "Filtering… %s",
 
   -- continuous list
@@ -216,6 +219,7 @@ strings.en = {
   desc_archive = "Archive",
   desc_spam = "Report as spam",
   desc_move = "Move to another tag",
+  desc_toggle_preview = "Follow the cursor with the body, or not",
   desc_refresh = "Fetch mail and reload",
   desc_expand = "Open the conversation",
   desc_collapse = "Close the conversation",
@@ -258,6 +262,9 @@ strings.ja = {
   search_hint = "%s で変更、%s で解除",
   scope_local = "直近 %d 通から",
   scope_index = "索引全体から",
+  preview_on = "本文がカーソルに追従します",
+  preview_off = "本文を閉じたままにします",
+  preview_no_room = "この大きさの区画には収まりません",
   searching = "絞り込んでいます… %s",
 
   count_of = "%s / %s 件",
@@ -427,6 +434,7 @@ strings.ja = {
   desc_archive = "保管する",
   desc_spam = "迷惑メールとして報告する",
   desc_move = "別のタグへ移す",
+  desc_toggle_preview = "本文の追従を切り替える",
   desc_refresh = "メールを取ってきて読み直す",
   desc_expand = "やり取りを開く",
   desc_collapse = "やり取りを閉じる",

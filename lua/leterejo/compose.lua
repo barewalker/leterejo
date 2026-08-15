@@ -698,7 +698,7 @@ local function open_buffer(values, body, at)
     vim.api.nvim_buf_delete(buf, { force = true })
   end
 
-  buf = vim.api.nvim_create_buf(false, true)
+  buf = vim.api.nvim_create_buf(true, true)
   vim.api.nvim_buf_set_name(buf, BUFNAME)
   vim.bo[buf].buftype = "acwrite" -- lets :w mean something here
   vim.bo[buf].bufhidden = "hide"

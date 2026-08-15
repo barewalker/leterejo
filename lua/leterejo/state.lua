@@ -49,6 +49,13 @@ local M = {
   -- The row the preview is showing, so an unchanged cursor fetches nothing.
   preview_id = nil,
 
+  -- Whether the preview follows the cursor at the moment.
+  --
+  -- nil means "as configured". Closing the body window says no, and it stays
+  -- no until asked for again: a window that reappears every time the cursor
+  -- moves cannot be closed, only fought with.
+  preview_enabled = nil,
+
   -- Active filter, or nil when not filtering.
   -- { text = "...", server = true|false, scanned = N }
   query = nil,
