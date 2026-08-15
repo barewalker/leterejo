@@ -1043,6 +1043,62 @@ function M.save_attachments(id, dir, on_done)
   end)
 end
 
+-- Any header of one message, decoded ----------------------------------------
+--
+-- What a reply needs: who it was to, what it answers, and the ids that keep it
+-- in its thread. Read from the file for the same reason the subject is — what
+-- notmuch hands back stops at the first encoded word.
+
+-- Patterns are built once per name and kept.
+local patterns = {}
+
+local function pattern_for(name)
+  if not patterns[name] then
+    patterns[name] = header_pattern(name)
+  end
+  return patterns[name]
+end
+
+function M.headers_of(id, names, on_done)
+  run({ "search", "--output=files", id_query(id) }, function(ok, out)
+    if not ok then
+      return on_done(false, out)
+    end
+
+    local path = vim.trim(tostring(out):match("[^\n]+") or "")
+    if path == "" then
+      return on_done(false, lang.t("err_notmuch"))
+    end
+
+    local f = io.open(path, "rb")
+    if not f then
+      return on_done(false, lang.t("err_notmuch"))
+    end
+
+    local text = f:read(HEADER_BYTES) or ""
+    f:close()
+
+    local head = "\n" .. (text:match("^(.-)\r?\n\r?\n") or text) .. "\n."
+
+    local found = {}
+    for _, name in ipairs(names) do
+      local value = head:match(pattern_for(name))
+      if value then
+        value = vim.trim((value:gsub("\r?\n[ \t]+", " ")))
+        -- Ids and references are read as written; only what is shown to
+        -- someone needs decoding.
+        if name == "message-id" or name == "references" or name == "in-reply-to" then
+          found[name] = value
+        else
+          found[name] = decode_words(value)
+        end
+      end
+    end
+
+    on_done(true, found)
+  end)
+end
+
 -- Everyone written to, and everyone written from ---------------------------
 --
 -- `notmuch address` walks every matching message, so it costs 18 seconds over

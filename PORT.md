@@ -55,6 +55,29 @@ the user hear about it and the list get read again. A sync meeting another `gmi`
 fails at once rather than queueing (the lock is taken without waiting), so that
 case is recognised by its message and retried after a pause.
 
+**Replies and forwards are written here.** `message reply` wants the id the
+backend uses — an IMAP UID — and what this holds is a Message-ID, which is all
+notmuch can look a message up by, so replying never worked from the index. The
+answer is assembled instead: the recipients from the original's headers, the
+subject with one "Re:", the quote in the buffer where it can be cut down, and
+`In-Reply-To` / `References` to keep it in its thread.
+
+Encoding stays himalaya's. It builds the message from the fields as before, to
+standard output rather than the wire; the two threading headers go in — they
+are message ids, so there is no encoding to get wrong — and `message send`
+takes the result back on standard input. A draft filed on the server goes the
+same way through `message add`.
+
+A forward carries the original below what the sender adds, headed by From,
+Date, Subject and To. It does not carry attachments, and says so when the
+message has any: himalaya's own forward would have, but that needs the
+backend's id too.
+
+**Fetching on a timer.** `lieer.interval` minutes, syncing each repository in
+turn and reloading the list without moving the reader. This is what lieer made
+possible and mbsync could not: mbsync needed a passphrase out of gpg, so it
+could not run unattended.
+
 Two smaller ones. `cli.warm_up` is gone: it ran `himalaya account list` before
 the first list to get pinentry out of the way, and `account list` only
 enumerates the configuration — it is unlikely to have read `pass` at all. Now
@@ -124,30 +147,6 @@ of every nested label — `WORK/Jobcan` from lieer, `WORK.Jobcan` from the
 Maildir-hierarchy import — on the same messages, since notmuch merges by
 Message-ID and tags belong to the message rather than the file. Deleting the
 files does not remove the tags; only a pull that rewrites them does.
-
-## To add
-
-**Reply and forward, assembled here.** `compose.lua` hands `envelope.id` (a
-Message-ID) to `himalaya message reply <id>`, which wants an IMAP UID. This is
-the same shape as the attachment bug Sherpa hit and fixed
-(`sherpa: Invalid message UID '004d01dc74a2$...'`), so reply and forward have
-been broken for local reading and simply went unused. Under lieer they need no
-UID at all: the original is in the index, so the quote, `In-Reply-To` and
-`References` can be built here and handed to `message compose --send`.
-
-**A timer.** Nothing fetches mail on its own yet, which is why new mail did not
-appear. lieer holds an OAuth token in a file and never touches gpg, so unlike
-mbsync it can run unattended — this is what §6-1 of the design notes was
-blocked on.
-
-Set `gmi set --timeout 60` first. The default is 600, and a stalled request
-hangs silently for ten minutes; that happened here. Note also that lieer prints
-no progress when its output is not a terminal, so a timer cannot tell a running
-sync from a stuck one by reading it, and that `--limit` cannot be combined with
-removing local messages — run it with `--no-remove-local-messages`.
-
-`notmuch new` is not needed: lieer registers what it fetched itself
-(`local.py:615`).
 
 ## To keep
 
