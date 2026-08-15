@@ -125,19 +125,20 @@ In the list:
 Writing: `<leader>hs` sends, `<leader>hw` (or `:w`) saves the draft,
 `<leader>hu` files it on the server, `<leader>ha` suggests an address,
 `<leader>hg` picks a signature, `<leader>hq` discards. In the header area Enter
-moves to the next field and `dd` clears one.
+moves to the next field and `dd` clears one. A forward carries what the
+original carried, in the Attach field.
 
 ## What it does not do
 
 - **No IMAP.** Reading is the local index or nothing
-- **No attachments on a forward.** himalaya's own forward carries them but
-  needs the backend's id, which a local index does not have
 - **No Gmail tabs.** lieer drops `CATEGORY_*` by default, so the inbox holds
   everything Gmail labels `INBOX`, not what the web client shows under Primary
 - **Nothing writes to Gmail except tagging and sending.** No filters, no
   settings, no delete-for-real
 
 ## Configuration
+
+All of this is also `:help leterejo` once the plugin is installed.
 
 Every option is documented where it is defined, in
 [`lua/leterejo/config.lua`](lua/leterejo/config.lua). The ones most often

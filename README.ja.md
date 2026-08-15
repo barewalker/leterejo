@@ -98,16 +98,17 @@ require("leterejo").setup({
 | `p` `u` `?` `q` | 本文の追従、取得して読み直す、キー一覧、閉じる |
 | `l` `h` `<tab>` | やり取りを開く・閉じる・切り替える |
 
-作成画面: `<leader>hs` 送信、`<leader>hw` (または `:w`) 下書き保存、`<leader>hu` サーバに控えを置く、`<leader>ha` アドレス候補、`<leader>hg` 署名を選ぶ、`<leader>hq` 破棄。ヘッダ欄では `Enter` が次の項目へ、`dd` がその項目を空にする。
+作成画面: `<leader>hs` 送信、`<leader>hw` (または `:w`) 下書き保存、`<leader>hu` サーバに控えを置く、`<leader>ha` アドレス候補、`<leader>hg` 署名を選ぶ、`<leader>hq` 破棄。ヘッダ欄では `Enter` が次の項目へ、`dd` がその項目を空にする。転送は元メールが持っていた添付を Attach 欄に取り出して一緒に送る。
 
 ## できないこと
 
 - **IMAP は使わない。** 読めるのは手元の索引にあるものだけ
-- **転送に添付が付かない。** himalaya の転送は添付を運べるが、バックエンドの id を要求する。手元の索引にそれは無い
 - **Gmail のタブを区別しない。** lieer が `CATEGORY_*` を既定で捨てるため、受信箱は Gmail が `INBOX` を付けた全部になる (web の「メイン」タブとは数が違う)
 - **Gmail に書き込むのはタグと送信だけ。** フィルタも設定も、本当の削除も行わない
 
 ## 設定
+
+導入後は `:help leterejo` でも同じ内容が読める (`set helplang=ja` で日本語版)。
 
 すべての項目は定義箇所 ([`lua/leterejo/config.lua`](lua/leterejo/config.lua)) に説明がある。よく使うもの:
 
