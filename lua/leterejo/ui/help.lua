@@ -54,7 +54,19 @@ local ORDER = {
     { "spam", "desc_spam" },
     { "move", "desc_move" },
     { "help", "desc_help" },
-    { "close", "desc_close" },
+    { "close", "desc_back" },
+    { "close_alt", "desc_back" },
+  },
+
+  -- Writing one. Sending first: it is the one that cannot be taken back, and
+  -- the one worth being sure of the key for.
+  compose = {
+    { "send", "desc_send" },
+    { "save", "desc_save_draft" },
+    { "upload", "desc_upload_draft" },
+    { "address", "desc_suggest" },
+    { "signature", "desc_signature" },
+    { "discard", "desc_discard" },
   },
 }
 
