@@ -86,7 +86,11 @@ local function run(args, account, on_done, opts)
 
   vim.list_extend(cmd, args)
 
-  vim.system(cmd, { text = true, timeout = config.options.timeout }, function(res)
+  vim.system(cmd, {
+    text = true,
+    timeout = config.options.timeout,
+    stdin = opts and opts.stdin or nil,
+  }, function(res)
     -- vim.system completes in a fast-event context where touching the
     -- screen or most APIs crashes; hop back to the main loop first.
     vim.schedule(function()
@@ -121,8 +125,11 @@ function M.json(args, account, on_done)
 end
 
 -- Fetch pre-rendered text as is.
-function M.text(args, account, on_done)
-  run(args, account, on_done)
+--
+--   opts.stdin : text to feed the command, for `message send`, which takes a
+--                whole RFC 5322 message that way
+function M.text(args, account, on_done, opts)
+  run(args, account, on_done, opts)
 end
 
 -- Fetch the configured accounts.

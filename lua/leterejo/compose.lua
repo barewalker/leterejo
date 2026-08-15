@@ -390,30 +390,19 @@ local function assemble(strict)
     end
   end
 
-  -- Assemble. Subject/body encoding and quoting are himalaya's work.
+  -- Assemble. Subject and body encoding are himalaya's work.
+  --
+  -- Always `compose`, even for a reply. `message reply` wants the id the
+  -- backend uses — an IMAP UID — and what this holds is a Message-ID, which is
+  -- all notmuch can look a message up by. So the answer is written here: the
+  -- recipients, the quote, and the headers that keep it in its thread.
   --
   -- Every value is joined to its option with "=" rather than passed as the next
   -- argument. himalaya's parser will not accept a value beginning with a hyphen
   -- in the separate form, so a message opening with a line of dashes — a
   -- signature, a rule above a quote — failed to send with
   -- `unexpected argument '---'`. The joined form has no such rule.
-  local args
-  if pending.kind == "reply" then
-    args = { "message", "reply", tostring(pending.id) }
-    if pending.mailbox then
-      table.insert(args, "--mailbox=" .. pending.mailbox)
-    end
-    if pending.headline then
-      table.insert(args, "--quote-headline=" .. pending.headline)
-    end
-  elseif pending.kind == "forward" then
-    args = { "message", "forward", tostring(pending.id) }
-    if pending.mailbox then
-      table.insert(args, "--mailbox=" .. pending.mailbox)
-    end
-  else
-    args = { "message", "compose" }
-  end
+  local args = { "message", "compose" }
 
   -- Always pass the sender. himalaya v2 does not fill From from its own
   -- configuration (v1's display-name and friends were removed), and without
@@ -430,78 +419,128 @@ local function assemble(strict)
     table.insert(args, "--bcc=" .. a)
   end
 
-  -- On reply and forward himalaya prefixes "Re:" / "Fwd:" itself, so only
-  -- pass a subject when the user actually edited it.
-  local subject = values.subject
-  if subject and subject ~= "" and subject ~= pending.original_subject then
-    table.insert(args, "--subject=" .. subject)
-  elseif pending.kind == "compose" then
-    table.insert(args, "--subject=" .. (subject or ""))
-  end
+  -- The subject as written. himalaya used to prefix "Re:" itself on a reply;
+  -- nothing does now, because the reply is assembled here and the prefix is
+  -- already in the field where it can be seen and changed.
+  table.insert(args, "--subject=" .. (values.subject or ""))
 
   table.insert(args, "--body=" .. body)
 
-  return { buf = buf, args = args, account = account, from = from, bcc = bcc }
+  -- What keeps a reply in its thread. Not something himalaya can be told, so
+  -- it is put into the message after it has built it.
+  local extra = {}
+  if pending.reply_to and pending.reply_to ~= "" then
+    table.insert(extra, "In-Reply-To: " .. pending.reply_to)
+    table.insert(extra, "References: " .. (pending.references or pending.reply_to))
+  end
+
+  return { buf = buf, args = args, account = account, from = from, bcc = bcc, extra = extra }
+end
+
+-- Put the threading headers into a message himalaya has already built.
+--
+-- After the first line, which keeps whatever himalaya chose to put first, and
+-- before the blank line that ends the header block. The values are message
+-- ids: ASCII, no encoding, nothing to get wrong.
+local function with_headers(message, extra)
+  if #extra == 0 then
+    return message
+  end
+
+  local lines = vim.split(message, "\n", { plain = true })
+  local out = { lines[1] }
+  vim.list_extend(out, extra)
+  vim.list_extend(out, vim.list_slice(lines, 2, #lines))
+  return table.concat(out, "\n")
 end
 
 -- Send.
+-- Send.
+--
+-- One step for a plain message: himalaya builds it and sends it. Two for a
+-- reply, because the headers that keep it in its thread cannot be passed to
+-- `compose` — so it builds the message to standard output, the headers go in,
+-- and `send` takes it back on standard input. himalaya still does every part
+-- of the encoding either way.
 function M.send()
   local m = assemble(true)
   if not m then
     return
   end
 
-  local args = vim.deepcopy(m.args)
-  table.insert(args, "--send")
-
-  -- Keep a copy where sent mail is kept, if this account keeps one.
-  --
-  -- Left unset for a provider that files sent mail itself — Gmail does, for
-  -- anything that went through its own SMTP — since asking for both leaves two
-  -- copies. It is worth setting for a server that does nothing unless told,
-  -- which is most of them: without it, sending leaves no trace anywhere.
   local a = (config.options.accounts or {})[m.account] or {}
   local sent = a.sent_mailbox or config.options.sent_mailbox
-  if type(sent) == "string" and sent ~= "" then
-    table.insert(args, "--save=" .. sent)
-  end
+  local keep = type(sent) == "string" and sent ~= "" and sent or nil
 
   local label = #m.bcc > 0 and lang.t("bcc_note", table.concat(m.bcc, ", ")) or ""
 
   -- Say both when they differ. Sending as one address through another's server
   -- is the case most worth reading back before it goes.
-  local own = ((config.options.accounts or {})[m.account] or {}).email
+  local own = a.email
   if own and own:lower() ~= m.from:lower() then
     vim.notify(lang.t("sending_via", m.from, m.account, label), vim.log.levels.INFO)
   else
     vim.notify(lang.t("sending", m.account, label), vim.log.levels.INFO)
   end
 
-  cli.text(args, m.account, function(ok, out, kind)
-    if not ok then
-      -- A locked password store is not really a failure of the message; the
-      -- draft is untouched and the same send will work once it is open. Offer
-      -- to do that here rather than leave the user to work out that pinentry
-      -- was what flashed past.
-      if kind == "passphrase" then
-        return M.unlock_then_send(m.account)
-      end
-      return vim.notify(lang.e("send_failed") .. "\n" .. out, vim.log.levels.ERROR)
+  local function failed(out, kind)
+    -- A locked password store is not really a failure of the message; the
+    -- draft is untouched and the same send will work once it is open. Offer
+    -- to do that here rather than leave the user to work out that pinentry
+    -- was what flashed past.
+    if kind == "passphrase" then
+      return M.unlock_then_send(m.account)
     end
+    vim.notify(lang.e("send_failed") .. "\n" .. tostring(out), vim.log.levels.ERROR)
+  end
 
+  local function done()
     vim.notify(lang.t("sent"), vim.log.levels.INFO)
 
     -- The draft has been sent, so it is no longer a draft.
-    if pending.draft then
+    if pending and pending.draft then
       os.remove(pending.draft)
     end
     pending = nil
 
-    -- Clean up the buffer once sent.
     if vim.api.nvim_buf_is_valid(m.buf) then
       vim.bo[m.buf].modified = false
       vim.api.nvim_buf_delete(m.buf, { force = true })
     end
+  end
+
+  -- Nothing to add: let himalaya build it and send it in one go.
+  if #m.extra == 0 then
+    local args = vim.deepcopy(m.args)
+    table.insert(args, "--send")
+    if keep then
+      table.insert(args, "--save=" .. keep)
+    end
+
+    return cli.text(args, m.account, function(ok, out, kind)
+      if not ok then
+        return failed(out, kind)
+      end
+      done()
+    end)
+  end
+
+  cli.text(m.args, m.account, function(ok, message, kind)
+    if not ok then
+      return failed(message, kind)
+    end
+
+    local args = { "message", "send" }
+    if keep then
+      table.insert(args, "--save=" .. keep)
+    end
+
+    cli.text(args, m.account, function(ok2, out2, kind2)
+      if not ok2 then
+        return failed(out2, kind2)
+      end
+      done()
+    end, { stdin = with_headers(message, m.extra) })
   end)
 end
 
@@ -544,16 +583,31 @@ function M.upload()
     return vim.notify(lang.e("no_draft_mailbox", m.account), vim.log.levels.WARN)
   end
 
-  local args = vim.deepcopy(m.args)
-  table.insert(args, "--save=" .. mailbox)
-
   vim.notify(lang.t("draft_uploading", mailbox, m.account), vim.log.levels.INFO)
 
-  cli.text(args, m.account, function(ok, out)
+  local function done(ok, out)
     if not ok then
-      return vim.notify(lang.e("draft_upload_failed") .. "\n" .. out, vim.log.levels.ERROR)
+      return vim.notify(lang.e("draft_upload_failed") .. "\n" .. tostring(out), vim.log.levels.ERROR)
     end
     vim.notify(lang.t("draft_uploaded", mailbox), vim.log.levels.INFO)
+  end
+
+  -- Nothing to add: himalaya can build it and file it in one step.
+  if #m.extra == 0 then
+    local args = vim.deepcopy(m.args)
+    table.insert(args, "--save=" .. mailbox)
+    return cli.text(args, m.account, done)
+  end
+
+  -- A draft of a reply keeps what threads it, the same way the sent message
+  -- does: built, added to, and then appended as a whole.
+  cli.text(m.args, m.account, function(ok, message)
+    if not ok then
+      return done(false, message)
+    end
+    cli.text({ "message", "add", "--mailbox=" .. mailbox }, m.account, done, {
+      stdin = with_headers(message, m.extra),
+    })
   end)
 end
 
@@ -1161,7 +1215,40 @@ end
 --   all = true replies to everyone. himalaya v2 dropped
 --   `message reply --all`, so the recipients are assembled here. The original
 --   Cc is absent from the envelope, so it is read from the body's headers.
-local function open_reply(envelope, all, extra_to, extra_cc)
+-- The original, quoted.
+--
+-- Written into the buffer rather than left to himalaya, which cannot be asked
+-- for it without the backend's own id. Being in the buffer is the better end
+-- of that trade: what is quoted can be cut down to the part being answered,
+-- which is what a reader of the reply wants and what a long thread needs.
+local function quoted(headline, body)
+  local out = { "", headline }
+
+  -- The body notmuch renders opens with the headers; the quote starts at the
+  -- message itself.
+  local lines = vim.split(body or "", "\n", { plain = true })
+  local at = 1
+  for i, line in ipairs(lines) do
+    if line == "" then
+      at = i + 1
+      break
+    end
+  end
+
+  for i = at, #lines do
+    local line = lines[i]
+    table.insert(out, line == "" and ">" or ("> " .. line))
+  end
+
+  -- A quote of nothing but blank lines is not worth carrying.
+  while #out > 2 and out[#out] == ">" do
+    table.remove(out)
+  end
+
+  return out
+end
+
+local function open_reply(envelope, all, original, body)
   stash()
 
   local account = state.account or lang.t("account_default")
@@ -1171,9 +1258,9 @@ local function open_reply(envelope, all, extra_to, extra_cc)
   local cc_list = {}
 
   if all then
-    -- Fold the original recipients in, minus yourself.
-    vim.list_extend(to_list, extra_to or {})
-    cc_list = without(extra_cc or {}, { my })
+    -- Everyone the original was addressed to, minus yourself.
+    vim.list_extend(to_list, header_addrs((original or {})["to"] or ""))
+    cc_list = without(header_addrs((original or {})["cc"] or ""), { my })
   end
 
   -- Drop yourself, unless that would empty the list — replying to your own
@@ -1181,66 +1268,72 @@ local function open_reply(envelope, all, extra_to, extra_cc)
   local filtered = without(to_list, { my })
   to_list = #filtered > 0 and filtered or without(to_list, {})
 
-  local subject = "Re: " .. util.strip_invisible(envelope.subject or "")
+  -- "Re:" once. A subject that already answers something is answered again
+  -- without stacking another prefix on it.
+  local subject = util.strip_invisible(envelope.subject or "")
+  if not subject:lower():match("^re:") then
+    subject = "Re: " .. subject
+  end
+
+  local message_id = (original or {})["message-id"]
+  local references = (original or {})["references"]
 
   pending = {
     kind = "reply",
     id = envelope.id,
     mailbox = state.mailbox,
-    headline = quote_headline(envelope),
     original_subject = subject,
+    -- What keeps the answer in the thread. References is the chain so far
+    -- with this message on the end; a reader that threads by it wants both.
+    reply_to = message_id,
+    references = message_id and vim.trim((references or "") .. " " .. message_id) or nil,
   }
 
-  -- No quote here: himalaya appends it after the body on send. Including
-  -- one would duplicate it.
   local values = form_values(account, table.concat(to_list, ", "), table.concat(cc_list, ", "), subject)
-  local body, at = body_lines(account, "reply", envelope)
+  local lines, at = body_lines(account, "reply", envelope)
+
+  if body then
+    vim.list_extend(lines, quoted(quote_headline(envelope), body))
+  end
 
   -- Straight into the body: a reply has its recipients and its subject
   -- already, and what is missing is what one came to write.
-  open_buffer(values, body, at)
+  open_buffer(values, lines, at)
 end
 
 -- Reply. Omitting `all` follows the reply_mode setting.
+--
+-- Two things are read first, and both come from the message itself: the
+-- headers, for who else was written to and the ids that thread the answer, and
+-- the body, to quote. Neither is in the envelope the list holds, and from the
+-- index both cost milliseconds.
 function M.reply(envelope, all)
   if all == nil then
     all = config.options.reply_mode == "all"
   end
 
-  if not all then
-    return open_reply(envelope, false)
-  end
+  local original, body
+  local headers_done, body_done = false, false
 
-  -- Replying to all needs the original To and Cc. Envelopes carry no Cc, so
-  -- the body's headers are read; from the index that costs milliseconds, so it
-  -- happens without announcing itself.
-  local function with_body(body)
-    local to_list, cc_list = {}, {}
-
-    for _, line in ipairs(vim.split(body or "", "\n", { plain = true })) do
-      if line == "" then
-        break -- end of headers
-      end
-      local name, value = line:match("^([%w%-]+):%s*(.*)$")
-      if name then
-        local lower = name:lower()
-        if lower == "to" then
-          vim.list_extend(to_list, header_addrs(value))
-        elseif lower == "cc" then
-          vim.list_extend(cc_list, header_addrs(value))
-        end
-      end
+  local function ready()
+    if headers_done and body_done then
+      open_reply(envelope, all, original, body)
     end
-
-    open_reply(envelope, true, to_list, cc_list)
   end
+
+  notmuch.headers_of(envelope.id, { "message-id", "references", "to", "cc" }, function(ok, found)
+    original = ok and found or {}
+    headers_done = true
+    ready()
+  end)
 
   notmuch.read(envelope.id, function(ok, out)
     if not ok then
-      vim.notify(lang.e("reply_fallback"), vim.log.levels.WARN)
-      return open_reply(envelope, false)
+      vim.notify(lang.e("reply_no_quote"), vim.log.levels.WARN)
     end
-    with_body(out)
+    body = ok and out or nil
+    body_done = true
+    ready()
   end)
 end
 
@@ -1250,20 +1343,75 @@ function M.reply_other(envelope)
 end
 
 -- Forward.
+-- Forward.
+--
+-- The message is written out below what the sender adds, headed by the lines a
+-- reader needs to know whose message it was. Attachments do not come with it:
+-- himalaya's own forward would have carried them, but it needs the backend's
+-- id for that, and what this holds is a Message-ID. Saying so is better than a
+-- forward that quietly arrives without the file it was about.
 function M.forward(envelope)
-  stash()
-
   local account = state.account or lang.t("account_default")
-  local subject = "Fwd: " .. util.strip_invisible(envelope.subject or "")
 
-  pending = {
-    kind = "forward",
-    id = envelope.id,
-    mailbox = state.mailbox,
-    original_subject = subject,
-  }
+  local subject = util.strip_invisible(envelope.subject or "")
+  if not subject:lower():match("^fwd?:") then
+    subject = "Fwd: " .. subject
+  end
 
-  open_buffer(form_values(account, "", "", subject), body_lines(account, "forward", envelope))
+  local function open(original, body)
+    stash()
+
+    pending = {
+      kind = "forward",
+      id = envelope.id,
+      mailbox = state.mailbox,
+      original_subject = subject,
+    }
+
+    local lines = body_lines(account, "forward", envelope)
+
+    if body then
+      table.insert(lines, "")
+      table.insert(lines, lang.t("forwarded_head"))
+      for _, name in ipairs({ "from", "date", "subject", "to", "cc" }) do
+        local value = (original or {})[name]
+        if value and value ~= "" then
+          table.insert(lines, lang.t("header_" .. name) .. ": " .. value)
+        end
+      end
+      vim.list_extend(lines, quoted("", body))
+    end
+
+    open_buffer(form_values(account, "", "", subject), lines)
+  end
+
+  local original, body
+  local headers_done, body_done = false, false
+
+  local function ready()
+    if headers_done and body_done then
+      open(original, body)
+    end
+  end
+
+  notmuch.headers_of(envelope.id, { "from", "date", "subject", "to", "cc" }, function(ok, found)
+    original = ok and found or {}
+    headers_done = true
+    ready()
+  end)
+
+  notmuch.read(envelope.id, function(ok, out)
+    if not ok then
+      vim.notify(lang.e("reply_no_quote"), vim.log.levels.WARN)
+    end
+    body = ok and out or nil
+    body_done = true
+    ready()
+  end)
+
+  if envelope["has-attachment"] then
+    vim.notify(lang.t("forward_no_attachments"), vim.log.levels.WARN)
+  end
 end
 
 return M
