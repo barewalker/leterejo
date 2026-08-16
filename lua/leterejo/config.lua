@@ -419,8 +419,10 @@ M.defaults = {
 
   -- Draw images the message carries, in the message itself.
   --
-  --   "opened"  in a message opened with <CR>, but not in the preview
-  --   true      everywhere the body is shown, preview included
+  --   true      everywhere the body is shown, preview included — but only in
+  --             the preview while `inline_image_max_pixels` and `image_resize`
+  --             can keep what is sent to a bounded size
+  --   "opened"  in a message opened with <CR>, never in the preview
   --   false     never
   --
   -- Only what is inside the message: an attachment, or a part the HTML refers
@@ -431,23 +433,50 @@ M.defaults = {
   -- Needs snacks.nvim and a terminal that speaks the kitty graphics protocol.
   -- Without either, nothing is drawn and the attachment list reads as before.
   --
-  -- Why the default is not `true`. A picture in a terminal is two things: the
-  -- image, registered once, and a short instruction to show it. Only the second
-  -- should ever repeat. But a multiplexer draws its own text over the picture
-  -- and must put it back on every frame — and one of them was measured
-  -- re-preparing the whole image each time in order to decide it did not need
-  -- to send it. Sixty-two frames a second, a full core, for a body nobody was
-  -- touching; the editor showed 0.0% while the multiplexer showed 108%.
+  -- The preview is redrawn every time the cursor moves, so an image sent whole
+  -- costs there in a way it does not in a message opened deliberately. One
+  -- attachment of 3840x2160 is 33 MB of pixels, 44 MB encoded — measured here,
+  -- and refused by the terminal for exceeding a 32 MB frame, so the picture
+  -- never appeared and the same 44 MB was rebuilt on every frame after that.
   --
-  -- The preview follows the cursor, so it is where that costs most and is
-  -- wanted least. A message opened deliberately draws them as before. Set this
-  -- to `true` once the terminal stops doing that — it is the nicer setting and
-  -- nothing here prefers the other one.
-  inline_images = "opened",
+  -- Shrinking first settles it: the same image at 800 across is 1.4 MB. So the
+  -- preview draws images while there is something to shrink with, and quietly
+  -- does not while there is not — `"opened"` is for saying no to the preview
+  -- regardless.
+  inline_images = true,
 
   -- How many lines an image may take. A banner would otherwise fill the window
   -- and push the text it belongs to off the bottom.
   inline_image_max_height = 12,
+
+  -- Shrink an image to this many pixels on its longest side before the terminal
+  -- is asked to draw it. nil hands over whatever was attached.
+  --
+  -- What crosses to the terminal is pixels, not the file. A 200 KB photograph
+  -- four thousand pixels across becomes tens of megabytes on the wire — and it
+  -- is then shown twelve rows tall, which at an ordinary cell height is under
+  -- three hundred pixels. Every one of those megabytes was decoration for a
+  -- thumbnail.
+  --
+  -- It is not only waste. One message here produced a 42 MB frame, which the
+  -- terminal refused for exceeding its 32 MB limit: the picture never appeared
+  -- at all, and — because a refused frame taught it nothing — the same 42 MB
+  -- was built again for every frame after that, sixty-two times a second. 800
+  -- is generous against twelve rows and leaves that far behind.
+  --
+  -- The copy is kept beside the original and made once. Saving an attachment
+  -- still saves what was attached; this is only what is shown.
+  inline_image_max_pixels = 800,
+
+  -- How to make that copy. {src} {dst} {max} are filled in.
+  --
+  -- `[0]` takes the first frame, so an animation does not become a directory of
+  -- them, and `>` means shrink-only, so a small image is left as it is. The
+  -- output is PNG whatever went in, which also settles the formats a terminal
+  -- would otherwise be handed and refuse.
+  --
+  -- Set to nil to hand images over untouched.
+  image_resize = { "convert", "{src}[0]", "-resize", "{max}x{max}>", "{dst}" },
 
   -- The local notmuch index, which is where everything is read from.
   --
