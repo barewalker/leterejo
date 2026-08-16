@@ -49,22 +49,33 @@ local function first_line(s)
   return ""
 end
 
--- An interrupted full pull, left behind for the next run to carry on from.
+-- A sync too long for the timeout that started it -----------------------------
 --
--- It has to be finished before anything else can work: without it lieer has no
--- history point to sync from, so every `gmi sync` starts the whole pull again —
--- twenty minutes for 32,000 messages. Which cannot end well on a five-minute
--- timer with a two-minute patience: the run is killed part way, the resume file
--- survives, and the same thing happens again five minutes later, for ever. That
--- is what happened here, and the account went a day without mail while every
--- round reported a failure that said nothing.
+-- lieer's push begins by fetching the remote metadata of every message notmuch
+-- says has changed since the last push, and only writes its `lastmod` mark when
+-- the whole thing is done. So a large backlog is all-or-nothing — and one built
+-- up here without anybody doing anything wrong: the full pull that brought
+-- Gmail's tabs in rewrote the tags of every message, which left 24,788 of them
+-- "changed". The next push had to look all of them up:
 --
--- So it is refused rather than attempted, and said once in words that name the
--- way out — `gmi sync` and not `gmi pull`, because sync pushes first (§14.2)
--- and a pull on its own writes the remote labels over every local change that
--- has been waiting here since the account got stuck.
-local function resuming(dir)
-  return vim.fn.filereadable(dir .. "/.resume-pull.gmailieer.json") == 1
+--     receiving metadata (24788) ... done: 24788 its in 15m:33.043s
+--
+-- Fifteen minutes, ten of them spent waiting out Gmail's rate limit. Against a
+-- two-minute timeout on a five-minute timer that is not slow, it is impossible:
+-- killed part way, mark unmoved, same 24,788 again five minutes later, for
+-- ever. The account went from one evening to the next afternoon without
+-- fetching a message.
+--
+-- vim.system reports the kill as code 124, signal 15, and **empty output** —
+-- which is why every round said only "gmi failed to run". There was nothing
+-- else to say: the words were killed along with the process.
+--
+-- So a timeout is recognised for what it is, said once, and the timer stops
+-- trying. Anything that succeeds afterwards clears it.
+local stalled = {}
+
+local function timed_out(res)
+  return res.code == 124 or res.signal == 15
 end
 
 -- Conditions that stand until someone does something about them.
@@ -167,14 +178,6 @@ function M.sync(account, on_done)
     return on_done(false, lang.t("err_no_lieer_dir"))
   end
 
-  -- Nothing can sync until the interrupted pull is finished, so this is said
-  -- rather than attempted — and `blocked` tells the caller it has been said
-  -- already, so it does not say it again in its own words.
-  if resuming(dir) then
-    announce(account, lang.t("lieer_resume_needed", dir))
-    return on_done(false, nil, nil, "blocked")
-  end
-
   local opts = config.options.lieer or {}
   local attempts = (opts.retries or 2) + 1
 
@@ -234,8 +237,21 @@ function M.sync(account, on_done)
           -- editor's timer can let this round stand for its own.
           stamp(account)
           clear_announcement(account)
+          stalled[account or ""] = nil
 
           return on_done(true, nil, refused or nil)
+        end
+
+        -- Killed by our own timeout. Nothing was said by the process because
+        -- there was no chance to say it, and nothing was written by lieer
+        -- either — so trying again on the next tick would do exactly this
+        -- again. Said once, and the timer leaves it alone until something
+        -- succeeds; `u` in the list is what tries again.
+        if timed_out(res) then
+          stalled[account or ""] = true
+          local seconds = math.max(1, math.floor((opts.timeout or 120000) / 1000))
+          announce(account, lang.t("err_lieer_timeout", seconds, dir))
+          return on_done(false, nil, nil, "blocked")
         end
 
         -- The lock was free a moment ago and is not now. Rare, since the glance
@@ -365,6 +381,12 @@ function M.tick(on_done)
     local dir = repository(name)
     if not dir then
       return go()
+    end
+
+    -- A sync that was killed by the timeout will be killed again, and has
+    -- already said so. Left alone until something succeeds.
+    if stalled[name] then
+      return step()
     end
 
     -- Another editor has already fetched this account within this round. Its
