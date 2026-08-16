@@ -864,8 +864,10 @@ function M.sync()
 
   vim.notify(lang.t("syncing"), vim.log.levels.INFO)
 
-  lieer.sync(account, function(ok, res)
-    if not ok then
+  lieer.sync(account, function(ok, res, _, kind)
+    -- `blocked` means lieer has already said why, in words that name the way
+    -- out; saying it again in ours would only add a second prefix.
+    if not ok and kind ~= "blocked" then
       vim.notify(lang.e("sync_failed", tostring(res)), vim.log.levels.WARN)
     end
     if state.account == account then

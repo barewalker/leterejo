@@ -60,9 +60,37 @@ end
 -- round reported a failure that said nothing.
 --
 -- So it is refused rather than attempted, and said once in words that name the
--- way out.
+-- way out — `gmi sync` and not `gmi pull`, because sync pushes first (§14.2)
+-- and a pull on its own writes the remote labels over every local change that
+-- has been waiting here since the account got stuck.
 local function resuming(dir)
   return vim.fn.filereadable(dir .. "/.resume-pull.gmailieer.json") == 1
+end
+
+-- Conditions that stand until someone does something about them.
+--
+-- A blocked repository is not an event. It is the same sentence for every tag,
+-- every archive, every five minutes, and repeating it turns the one message
+-- that would have been read into noise. Said once per account, and again only
+-- if it changes.
+--
+-- Said here rather than handed back as a failure, because the callers wrap what
+-- they are given in "could not sync with Gmail … the change is here but not
+-- there yet" — which is true, and is also three quarters of what this sentence
+-- already says, with a second `leterejo:` in front of it.
+local announced = {}
+
+local function announce(account, message)
+  local key = account or ""
+  if announced[key] == message then
+    return
+  end
+  announced[key] = message
+  vim.notify(lang.t("prefix") .. message, vim.log.levels.WARN)
+end
+
+local function clear_announcement(account)
+  announced[account or ""] = nil
 end
 
 -- Running more than one Neovim ------------------------------------------------
@@ -139,8 +167,12 @@ function M.sync(account, on_done)
     return on_done(false, lang.t("err_no_lieer_dir"))
   end
 
+  -- Nothing can sync until the interrupted pull is finished, so this is said
+  -- rather than attempted — and `blocked` tells the caller it has been said
+  -- already, so it does not say it again in its own words.
   if resuming(dir) then
-    return on_done(false, lang.e("lieer_resume_needed", dir))
+    announce(account, lang.t("lieer_resume_needed", dir))
+    return on_done(false, nil, nil, "blocked")
   end
 
   local opts = config.options.lieer or {}
@@ -201,6 +233,7 @@ function M.sync(account, on_done)
           -- Say when this account was last brought up to date, so another
           -- editor's timer can let this round stand for its own.
           stamp(account)
+          clear_announcement(account)
 
           return on_done(true, nil, refused or nil)
         end
@@ -312,9 +345,13 @@ function M.tick(on_done)
     local name = names[i]
 
     local function go()
-      M.sync(name, function(ok, res)
+      M.sync(name, function(ok, res, _, kind)
         -- Say something when it breaks, but not once a minute for the same
-        -- reason. A silent background failure is worse than one line.
+        -- reason. A silent background failure is worse than one line — and one
+        -- already spoken for is worse than silence.
+        if not ok and kind == "blocked" then
+          return step()
+        end
         if not ok and res ~= last_failure then
           last_failure = res
           vim.notify(lang.t("prefix") .. lang.t("sync_failed", tostring(res)), vim.log.levels.WARN)
