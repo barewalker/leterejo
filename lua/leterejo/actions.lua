@@ -22,6 +22,20 @@ local function err(msg)
   vim.notify(lang.t("prefix") .. tostring(msg), vim.log.levels.ERROR)
 end
 
+-- Report a sync that did not happen.
+--
+-- Except when lieer has already reported it. A standing condition — an
+-- interrupted pull that has to be finished before anything can sync — is said
+-- once, in words that name the way out; wrapping it again in "could not sync
+-- with Gmail … the change is here but not there yet" repeats three quarters of
+-- it and puts a second `leterejo:` in front.
+local function said_why(res, kind)
+  if kind == "blocked" then
+    return
+  end
+  vim.notify(lang.e("sync_failed", tostring(res)), vim.log.levels.WARN)
+end
+
 -- Refuse anything that would modify mail on a read-only account.
 local function writable()
   if state.is_readonly() then
@@ -198,9 +212,9 @@ local function push(account, id, change)
     return vim.notify(lang.e("no_lieer_dir_note"), vim.log.levels.WARN)
   end
 
-  lieer.sync(account, function(ok, res, refused)
+  lieer.sync(account, function(ok, res, refused, kind)
     if not ok then
-      return vim.notify(lang.e("sync_failed", tostring(res)), vim.log.levels.WARN)
+      return said_why(res, kind)
     end
     confirm(account, id, change, 1, refused)
   end)
@@ -491,9 +505,9 @@ local function push_many(account, ids, change)
     return vim.notify(lang.e("no_lieer_dir_note"), vim.log.levels.WARN)
   end
 
-  lieer.sync(account, function(ok, res, refused)
+  lieer.sync(account, function(ok, res, refused, kind)
     if not ok then
-      return vim.notify(lang.e("sync_failed", tostring(res)), vim.log.levels.WARN)
+      return said_why(res, kind)
     end
     confirm_many(account, ids, change, 1, refused)
   end)
