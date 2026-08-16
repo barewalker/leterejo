@@ -500,7 +500,24 @@ local function with_sender_domain(message, from)
     return message
   end
 
-  return (message:gsub("^(Message%-I[Dd]:%s*<[^@>]*)@[^>]*>", "%1@" .. domain .. ">", 1))
+  -- Anchored to the start of a *line*, which Lua patterns cannot say: `^` means
+  -- the start of the string, and the Message-ID is almost never the first
+  -- header himalaya writes. Asked for twice instead — once for the string, once
+  -- after a newline — because the first form alone matched nothing and left the
+  -- hostname in place while looking exactly like a fix.
+  --
+  -- Replaced through a function so a domain is never read as a `%` escape.
+  local function replace(text, pattern)
+    return text:gsub(pattern, function(head)
+      return head .. "@" .. domain .. ">"
+    end, 1)
+  end
+
+  local out, n = replace(message, "^(Message%-I[Dd]:%s*<[^@>]*)@[^>]*>")
+  if n == 0 then
+    out = replace(message, "(\nMessage%-I[Dd]:%s*<[^@>]*)@[^>]*>")
+  end
+  return out
 end
 
 -- Put the threading headers into a message himalaya has already built.
@@ -831,7 +848,7 @@ local function open_buffer(values, body, at)
   vim.bo[buf].buftype = "acwrite" -- lets :w mean something here
   vim.bo[buf].bufhidden = "hide"
   vim.bo[buf].swapfile = false
-  vim.bo[buf].filetype = "mail"
+  util.ensure_syntax(buf, "mail")
 
   local lines = {}
   for _, f in ipairs(FIELDS) do

@@ -32,8 +32,37 @@ function M.configured(account)
   return repository(account) ~= nil
 end
 
+-- The first line worth showing out of what a run said.
+--
+-- The first *non-empty* one, because stdout and stderr are joined with a
+-- newline between them and lieer reports on stdout: taking the literal first
+-- line of that gave the empty string ahead of the separator every time stderr
+-- was quiet, and the caller then fell back to "gmi failed to run" — throwing
+-- away the only sentence that said what actually happened.
 local function first_line(s)
-  return vim.trim((tostring(s or ""):match("([^\n]*)")))
+  for line in tostring(s or ""):gmatch("[^\n]+") do
+    line = vim.trim(line)
+    if line ~= "" then
+      return line
+    end
+  end
+  return ""
+end
+
+-- An interrupted full pull, left behind for the next run to carry on from.
+--
+-- It has to be finished before anything else can work: without it lieer has no
+-- history point to sync from, so every `gmi sync` starts the whole pull again —
+-- twenty minutes for 32,000 messages. Which cannot end well on a five-minute
+-- timer with a two-minute patience: the run is killed part way, the resume file
+-- survives, and the same thing happens again five minutes later, for ever. That
+-- is what happened here, and the account went a day without mail while every
+-- round reported a failure that said nothing.
+--
+-- So it is refused rather than attempted, and said once in words that name the
+-- way out.
+local function resuming(dir)
+  return vim.fn.filereadable(dir .. "/.resume-pull.gmailieer.json") == 1
 end
 
 -- Running more than one Neovim ------------------------------------------------
@@ -108,6 +137,10 @@ function M.sync(account, on_done)
   local dir = repository(account)
   if not dir then
     return on_done(false, lang.t("err_no_lieer_dir"))
+  end
+
+  if resuming(dir) then
+    return on_done(false, lang.e("lieer_resume_needed", dir))
   end
 
   local opts = config.options.lieer or {}

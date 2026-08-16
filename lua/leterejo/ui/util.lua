@@ -364,4 +364,42 @@ function M.is_unseen(envelope)
   return not M.has_flag(envelope, "seen")
 end
 
+-- Make sure a buffer's colours are loaded, not merely asked for.
+--
+-- Setting `filetype` is not the same as the syntax having been read. The option
+-- fires a FileType autocmd and the autocmd is what reads the syntax file — and
+-- an autocmd can be suppressed. `eventignore` is set by perfectly ordinary
+-- things: fzf-lua wraps opening and closing a picker in it. Create a buffer in
+-- that moment and the option says "mail" while nothing was ever loaded, so the
+-- message is grey — and stays grey for the rest of the session, because setting
+-- the option to the value it already holds changes nothing and fires nothing.
+--
+-- Measured: with `eventignore=all` in force, `filetype` reads "mail",
+-- `b:current_syntax` is nil, and the header lines have no highlight at all.
+-- That is exactly what was reported, after an account picker and after tagging
+-- a selection — both of which are pickers.
+--
+-- `b:current_syntax` is the honest answer: the syntax file sets it and refuses
+-- to run twice on the strength of it. So that is what is checked, and the file
+-- is read directly rather than by asking for the option again.
+--
+-- Left alone when syntax is off altogether: that is a choice, not a mishap.
+function M.ensure_syntax(buf, name)
+  if not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
+
+  if vim.bo[buf].filetype ~= name then
+    vim.bo[buf].filetype = name
+  end
+
+  if not vim.g.syntax_on or vim.b[buf].current_syntax == name then
+    return
+  end
+
+  pcall(vim.api.nvim_buf_call, buf, function()
+    vim.cmd("runtime! syntax/" .. name .. ".vim")
+  end)
+end
+
 return M

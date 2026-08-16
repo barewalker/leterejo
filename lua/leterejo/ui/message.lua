@@ -429,19 +429,10 @@ function M.render(m, opts)
     setup_keymaps(buf)
   end
 
-  -- Say what this is again, if something has stopped agreeing.
-  --
-  -- The filetype is what colours a message: vim's own `mail` syntax marks the
-  -- header block, the levels of `>` quoting, addresses, URLs and the signature.
-  -- It is set when the buffer is made, and the buffer then outlives a great
-  -- deal — every other message, a plugin reload, anything that reaches in and
-  -- sets an option. One that has lost it stays monochrome for the rest of the
-  -- session with nothing to say why, so it is asserted per render rather than
-  -- once. Only when it differs: assigning it always fires FileType, and
-  -- reloading the syntax for every message is not free.
-  if vim.bo[buf].filetype ~= "mail" then
-    vim.bo[buf].filetype = "mail"
-  end
+  -- Per render, not once at creation. The buffer outlives every other message
+  -- and a picker can swallow the autocmd that loads the colours — see
+  -- util.ensure_syntax, which is where the whole of that is written down.
+  util.ensure_syntax(buf, "mail")
 
   -- Display only; no editing.
   vim.bo[buf].modifiable = true

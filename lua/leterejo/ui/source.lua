@@ -109,7 +109,7 @@ local function draw(name, lines)
 
     -- Neovim's own mail syntax colours header names and quoted text, which is
     -- exactly the shape of what is in here.
-    vim.bo[buf].filetype = "mail"
+    require("leterejo.ui.util").ensure_syntax(buf, "mail")
     vim.bo[buf].buftype = "nofile"
     vim.bo[buf].bufhidden = "wipe"
     vim.bo[buf].swapfile = false

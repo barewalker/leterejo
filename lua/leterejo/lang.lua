@@ -33,6 +33,7 @@ strings.en = {
   err_notmuch = "notmuch failed to run",
   err_lieer = "gmi failed to run",
   err_lieer_busy = "Another gmi is using the repository; the change is only on this machine for now",
+  lieer_resume_needed = "A full pull was interrupted and has to be finished before anything can sync: run `gmi pull` in %s. Until then nothing is fetched and changes stay on this machine",
   err_no_lieer_dir = "No lieer repository is configured for this account",
 
   -- envelope list
@@ -317,6 +318,7 @@ strings.ja = {
   err_notmuch = "notmuch の実行に失敗しました",
   err_lieer = "gmi の実行に失敗しました",
   err_lieer_busy = "別の gmi が同じメール木を使っています。変更はいまのところ手元だけです",
+  lieer_resume_needed = "全量 pull が途中で止まっています。これを終わらせないと同期できません: %s で `gmi pull` を実行してください。それまでメールは取得されず、変更も手元に留まります",
   err_no_lieer_dir = "このアカウントの lieer のメール木が設定されていません",
 
   loading = "読み込み中…",
