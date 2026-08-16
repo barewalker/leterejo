@@ -171,9 +171,9 @@ In the list (`filetype=leterejo-envelopes`):
     x       pick this row out           o     change the order
     A       attachments                 <Esc> clear the selection, then filter
     D       saved drafts                p     body follows the cursor, or not
-    l  h    open, close a conversation  u     fetch and read again
-    <Tab>   toggle a conversation       ?     the keys
-                                        q     close
+    H  gH   the headers, the whole file u     fetch and read again
+    l  h    open, close a conversation  ?     the keys
+    <Tab>   toggle a conversation       q     close
 
                                                           *leterejo-selection*
 `x` picks the row out and steps down, so a run of them is one key held rather
@@ -211,9 +211,25 @@ whenever it is not the usual one, and switching mailbox keeps it.
 In the message body: r R f A, s F e d S M as above, plus >
 
     h       show or fold the headers
+    H  gH   the whole header block, the whole message
     w       wrap long lines, or not
     q <Esc> back to the list
 <
+                                                             *leterejo-source*
+`h` unfolds the headers the body was drawn from, which is less than it sounds:
+`notmuch show --format=text` hands over four — Subject, From, To, Date — of
+the twenty-eight a message here carries. Nothing built on it can answer what
+the servers said on the way.
+
+`H` reads the file instead and shows the header block whole: the Received
+chain, Authentication-Results, DKIM-Signature, every X-. `gH` shows the entire
+message, MIME boundaries and base64 included, for when the structure is the
+thing in question. `q` closes either.
+
+A field carrying an encoded word is given its decoding underneath, marked with
+`->` so a line this view added is never taken for a line the message had — a
+folded header continues with whitespace and would otherwise look the same.
+`headers_decoded = false` leaves the block byte for byte.
 While writing:  >
 
     <leader>hs      send

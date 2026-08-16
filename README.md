@@ -120,6 +120,7 @@ In the list:
 | `x` `o` | pick this row out (visual: the range), change the order |
 | `/` `g/` `<esc>` | filter, pick a filter, clear the selection then the filter |
 | `A` `D` | attachments, saved drafts |
+| `H` `gH` | the whole header block, the whole message as it arrived |
 | `p` `u` `?` `q` | preview on/off, fetch and reload, keys, close |
 | `l` `h` `<tab>` | open, close, toggle a conversation |
 

@@ -257,11 +257,17 @@ M.defaults = {
     { query = "tag:spam", describe = "filter_spam" },
   },
 
-  -- Tags that are not places, and so are not offered as mailboxes.
+  -- Tags that are not offered as somewhere to put mail.
   --
   -- Every tag in the index is a mailbox, since that is what a Gmail label is —
-  -- except the ones that describe a message rather than say where it is.
-  -- Offering those would be offering to move mail into "unread".
+  -- except that some of them describe a message rather than say where it is,
+  -- and offering those to `M` or `t` would be offering to move mail into
+  -- "unread".
+  --
+  -- **This hides them from writing, not from reading.** `m` lists every tag in
+  -- the index, because being unable to file mail under a tag is no reason to be
+  -- unable to read what is filed there — which is the entire point of having
+  -- taken Gmail's tabs in.
   mailbox_hidden_tags = {
     "unread",
     "flagged",
@@ -504,6 +510,10 @@ M.defaults = {
       -- gets ticked with elsewhere.
       select = "x",
       sort = "o", -- change the order the list is in
+      -- The message as it arrived, for the questions a rendering cannot
+      -- answer: the Received chain, Authentication-Results, DKIM.
+      raw_headers = "H", -- the whole header block
+      raw_source = "gH", -- the whole message, MIME and all
       preview = "p", -- stop the body following the cursor, or let it again
       refresh = "u", -- refetch
       drafts = "D", -- open a saved draft
@@ -527,6 +537,8 @@ M.defaults = {
       forward = "f", -- forward
       attachments = "A", -- save and open attachments (g would break gg)
       toggle_headers = "h", -- toggle the folded headers
+      raw_headers = "H", -- the whole header block, as it arrived
+      raw_source = "gH", -- the whole message, MIME and all
       toggle_seen = "s", -- mark read or unread
       toggle_flagged = "F", -- add or remove the flagged mark
       trash = "d", -- move to the trash mailbox
@@ -651,7 +663,21 @@ M.defaults = {
   -- table into columns. The `toggle_wrap` key overrides it per message.
   message_wrap = "auto",
 
-  -- Headers kept visible when folding. Lower case.
+  -- Whether the raw header view (`raw_headers`) puts a decoding under a field
+  -- that carries an encoded word.
+  --
+  -- Added under the line rather than in place of it: the encoded word is what
+  -- was actually sent, and substituting it would make this one more rendering
+  -- instead of the thing itself — which is the only reason to open this view.
+  -- Set false for a byte-for-byte copy of the header block.
+  headers_decoded = true,
+
+  -- Headers kept visible when folding the body view.
+  --
+  -- Note this is a much smaller question than it looks: `notmuch show
+  -- --format=text`, which the body is read with, hands over four headers out
+  -- of the twenty-eight a message here carries. Unfolding shows the rest of
+  -- those four, not the rest of the message. `raw_headers` shows the file.
   visible_headers = {
     "from",
     "to",
