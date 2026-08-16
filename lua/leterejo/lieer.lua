@@ -36,6 +36,66 @@ local function first_line(s)
   return vim.trim((tostring(s or ""):match("([^\n]*)")))
 end
 
+-- Running more than one Neovim ------------------------------------------------
+--
+-- Two editors on one mailbox is an ordinary way to work — one in the mail
+-- window, one beside whatever is being written about — and nothing here may
+-- assume it is the only one. Three things follow.
+--
+-- notmuch needs no help: two `notmuch tag` processes on one index wait for each
+-- other rather than fail. Measured at twenty at once, all of them successful,
+-- and one waited 51 ms for a reindex to let go.
+--
+-- lieer does need help, twice. It takes its lock without waiting and then
+-- *raises* rather than exits, which apport turns into a crash dialog for
+-- something working exactly as designed — so a gmi is never started into a
+-- repository that is already busy. And two timers on one repository is twice
+-- the traffic to Gmail for the same mail, which matters because Gmail's rate
+-- limit is real: the second pull here was slowed 26 minutes by it. So a sync
+-- leaves a stamp, and a timer that finds a fresh one lets the other editor's
+-- round stand for its own.
+
+-- Whether another gmi holds this repository right now.
+--
+-- A glance, not a reservation: the lock can be taken in the moment between this
+-- and the process starting, which is why the retry below stays. It removes the
+-- ordinary collisions, not the race.
+local function busy(dir, on_done)
+  local ok = pcall(vim.system, { "flock", "-n", dir .. "/.lock", "true" }, { text = true }, function(res)
+    vim.schedule(function()
+      on_done(res.code ~= 0)
+    end)
+  end)
+
+  -- No flock to ask with: carry on as before and let gmi decide.
+  if not ok then
+    on_done(false)
+  end
+end
+
+-- Where the last successful sync of an account is recorded.
+--
+-- Outside the mail repository on purpose: that directory is lieer's, and a file
+-- of ours in it is one more thing for a future `gmi` to have an opinion about.
+local function stamp_file(account)
+  local dir = vim.fn.stdpath("state") .. "/leterejo"
+  vim.fn.mkdir(dir, "p")
+  return dir .. "/synced-" .. tostring(account or "default"):gsub("[^%w%-_]", "_")
+end
+
+local function stamp(account)
+  pcall(vim.fn.writefile, {}, stamp_file(account))
+end
+
+-- How long ago some editor last synced this account, in seconds.
+local function since_sync(account)
+  local at = vim.fn.getftime(stamp_file(account))
+  if at < 0 then
+    return math.huge
+  end
+  return os.time() - at
+end
+
 -- Push what changed here, then pull what changed there.
 --
 --   on_done(ok, message)
@@ -71,7 +131,18 @@ function M.sync(account, on_done)
     env.NOTMUCH_CONFIG = vim.fn.expand(notmuch_config)
   end
 
-  local function attempt(n)
+  local attempt
+
+  local function try_later(n)
+    if n < attempts then
+      return vim.defer_fn(function()
+        attempt(n + 1)
+      end, opts.retry_delay or 3000)
+    end
+    on_done(false, lang.t("err_lieer_busy"))
+  end
+
+  local function start(n)
     vim.system({
       opts.executable or "gmi",
       "sync",
@@ -94,22 +165,32 @@ function M.sync(account, on_done)
           local refused = text:match("update: remote has changed[^\n]*")
             or (text:find("not all changes could be pushed", 1, true) and text:match("push: not all changes[^\n]*"))
 
+          -- Say when this account was last brought up to date, so another
+          -- editor's timer can let this round stand for its own.
+          stamp(account)
+
           return on_done(true, nil, refused or nil)
         end
 
-        if text:find(BUSY, 1, true) and n < attempts then
-          -- A timer and a write have met. Wait for the other one to finish.
-          return vim.defer_fn(function()
-            attempt(n + 1)
-          end, opts.retry_delay or 3000)
-        end
-
+        -- The lock was free a moment ago and is not now. Rare, since the glance
+        -- below removes the ordinary case, but the race is real.
         if text:find(BUSY, 1, true) then
-          return on_done(false, lang.t("err_lieer_busy"))
+          return try_later(n)
         end
 
         on_done(false, first_line(text) ~= "" and first_line(text) or lang.t("err_lieer"))
       end)
+    end)
+  end
+
+  -- Look before starting one. A gmi that cannot take the lock does not decline
+  -- — it raises, and apport puts a crash report on the screen for it.
+  attempt = function(n)
+    busy(dir, function(taken)
+      if taken then
+        return try_later(n)
+      end
+      start(n)
     end)
   end
 
@@ -216,10 +297,19 @@ function M.tick(on_done)
       return go()
     end
 
+    -- Another editor has already fetched this account within this round. Its
+    -- mail is this one's mail: the index is shared, so there is nothing left
+    -- for a second fetch to find. Half the interval, so a single editor never
+    -- skips its own turn.
+    local minutes = (config.options.lieer or {}).interval or 0
+    if since_sync(name) < minutes * 30 then
+      return step()
+    end
+
     busy(dir, function(taken)
       if taken then
         -- Someone else is working in there. Nothing to report and nothing to
-        -- wait for: the next round is five minutes away.
+        -- wait for: the next round is one interval away.
         return step()
       end
       go()
