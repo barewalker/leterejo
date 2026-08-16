@@ -51,27 +51,48 @@ function M.available()
   return type(supports) == "function" and supports()
 end
 
+-- Whether what we would send can be kept to a size worth sending.
+--
+-- What crosses to the terminal is pixels. An attachment of 3840x2160 is 33 MB
+-- of them, 44 MB once encoded — measured here, and refused by the terminal for
+-- exceeding a 32 MB frame. So the picture never appeared, and since a refused
+-- frame taught it nothing, the same 44 MB was built again on every frame after
+-- that. Shrinking it first is what makes the whole question go away: the same
+-- image at 800 across is 1.4 MB.
+local function bounded()
+  local max = config.options.inline_image_max_pixels
+  local spec = config.options.image_resize
+  if not max or type(spec) ~= "table" or #spec == 0 then
+    return false
+  end
+  return vim.fn.executable(spec[1]) == 1
+end
+
 -- Whether to draw them in this particular view.
 --
--- A picture in a terminal is two things: the image registered once, and a small
--- instruction to show it. Only the second should repeat. But a multiplexer draws
--- its own text over the picture and has to put it back on every frame, and one
--- of them was measured re-preparing the whole image each time to decide it did
--- not need to send it — 62 times a second, a full core, for a body nobody was
--- touching. The preview follows the cursor, so it is exactly where that costs
--- most and is wanted least.
+--   true      wherever the body is shown, but only where the size is bounded
+--   "opened"  never in the preview, whatever the size
+--   false     never
 --
--- Hence `"opened"`: drawn in a message asked for by name, not in the one that
--- happens to be under the cursor. `inline_images = true` restores them
--- everywhere, which is the right setting once the terminal stops doing that.
+-- The preview is redrawn every time the cursor moves, so it is where an
+-- unbounded image costs most. Rather than refuse it outright, refuse it when
+-- there is nothing to shrink with — an attachment handed over whole is fine in
+-- a message opened deliberately, and is not fine sixty-two times a second.
 function M.wanted(opts)
   local mode = config.options.inline_images
   if not mode then
     return false
   end
-  if opts and opts.preview and mode ~= true then
-    return false
+
+  if opts and opts.preview then
+    if mode ~= true then
+      return false
+    end
+    if not bounded() then
+      return false
+    end
   end
+
   return M.available()
 end
 
@@ -85,6 +106,47 @@ function M.clear(buf)
     return
   end
   pcall(Snacks.image.placement.clean, buf)
+end
+
+-- Where the shrunk copy of an image is kept.
+--
+-- Beside the original and named for the size it was made at, so changing the
+-- setting makes a new one rather than showing the old one at the wrong size.
+-- Always .png: it is what every terminal takes, which also settles the formats
+-- that would otherwise be extracted and then refused.
+local function scaled_path(path, max)
+  return path:gsub("%.[^.]*$", "") .. "-" .. tostring(max) .. ".png"
+end
+
+-- Make a copy no larger than `max` pixels on its longest side.
+--
+-- Because what reaches the terminal is pixels, not the file: a 200 KB JPEG at
+-- four thousand pixels across becomes tens of megabytes on the wire, and the
+-- body shows it twelve rows tall. One message here produced a 42 MB frame that
+-- its terminal then refused as oversized — so the picture never appeared, and
+-- the work was repeated for every frame after that.
+--
+-- `on_done(path)` gets the copy, or nil when there is nothing to shrink with.
+local function shrink(src, dst, max, on_done)
+  local spec = config.options.image_resize
+
+  if type(spec) ~= "table" or #spec == 0 or vim.fn.executable(spec[1]) ~= 1 then
+    return on_done(nil)
+  end
+
+  local cmd = {}
+  for _, part in ipairs(spec) do
+    table.insert(
+      cmd,
+      (tostring(part):gsub("{%w+}", { ["{src}"] = src, ["{dst}"] = dst, ["{max}"] = tostring(max) }))
+    )
+  end
+
+  vim.system(cmd, { text = true }, function(res)
+    vim.schedule(function()
+      on_done(res.code == 0 and vim.fn.filereadable(dst) == 1 and dst or nil)
+    end)
+  end)
 end
 
 local function place(buf, path, row)
@@ -123,17 +185,36 @@ function M.show(buf, id, attachments, rows, opts)
 
   local notmuch = require("leterejo.notmuch")
 
+  -- Draw the smaller copy, making it first if this is the first sight of the
+  -- image. Both are kept: the original is what was attached, and saving it
+  -- should not hand over something this reduced for the screen.
+  local function draw(path, row)
+    local max = config.options.inline_image_max_pixels
+    if not max then
+      return place(buf, path, row)
+    end
+
+    local small = scaled_path(path, max)
+    if vim.fn.filereadable(small) == 1 then
+      return place(buf, small, row)
+    end
+
+    shrink(path, small, max, function(out)
+      place(buf, out or path, row)
+    end)
+  end
+
   for i, att in ipairs(attachments or {}) do
     local row = rows and rows[i]
     if row and tostring(att.content_type):match("^image/") and att.part then
       local path = cache_path(id, att.part, att.name, att.content_type)
 
       if vim.fn.filereadable(path) == 1 then
-        place(buf, path, row)
+        draw(path, row)
       else
         notmuch.save_part(require("leterejo.state").account, id, att.part, path, function(ok)
           if ok then
-            place(buf, path, row)
+            draw(path, row)
           end
         end)
       end
