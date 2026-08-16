@@ -695,7 +695,7 @@ local function load_search(buf)
   end)
 
   state.loading = true
-  search.run(account, mailbox, text, 0, config.options.chunk_size, function(ok, res, info)
+  search.run(account, mailbox, text, 0, config.options.chunk_size, state.sorting(), function(ok, res, info)
     state.loading = false
 
     if not ok then

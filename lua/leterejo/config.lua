@@ -419,6 +419,10 @@ M.defaults = {
 
   -- Draw images the message carries, in the message itself.
   --
+  --   "opened"  in a message opened with <CR>, but not in the preview
+  --   true      everywhere the body is shown, preview included
+  --   false     never
+  --
   -- Only what is inside the message: an attachment, or a part the HTML refers
   -- to by `cid:`. Remote images are never fetched, and that is deliberate — the
   -- majority of images in bulk mail are one-pixel trackers whose only purpose
@@ -426,7 +430,20 @@ M.defaults = {
   --
   -- Needs snacks.nvim and a terminal that speaks the kitty graphics protocol.
   -- Without either, nothing is drawn and the attachment list reads as before.
-  inline_images = true,
+  --
+  -- Why the default is not `true`. A picture in a terminal is two things: the
+  -- image, registered once, and a short instruction to show it. Only the second
+  -- should ever repeat. But a multiplexer draws its own text over the picture
+  -- and must put it back on every frame — and one of them was measured
+  -- re-preparing the whole image each time in order to decide it did not need
+  -- to send it. Sixty-two frames a second, a full core, for a body nobody was
+  -- touching; the editor showed 0.0% while the multiplexer showed 108%.
+  --
+  -- The preview follows the cursor, so it is where that costs most and is
+  -- wanted least. A message opened deliberately draws them as before. Set this
+  -- to `true` once the terminal stops doing that — it is the nicer setting and
+  -- nothing here prefers the other one.
+  inline_images = "opened",
 
   -- How many lines an image may take. A banner would otherwise fill the window
   -- and push the text it belongs to off the bottom.

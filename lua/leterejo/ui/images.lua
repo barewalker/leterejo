@@ -51,6 +51,30 @@ function M.available()
   return type(supports) == "function" and supports()
 end
 
+-- Whether to draw them in this particular view.
+--
+-- A picture in a terminal is two things: the image registered once, and a small
+-- instruction to show it. Only the second should repeat. But a multiplexer draws
+-- its own text over the picture and has to put it back on every frame, and one
+-- of them was measured re-preparing the whole image each time to decide it did
+-- not need to send it — 62 times a second, a full core, for a body nobody was
+-- touching. The preview follows the cursor, so it is exactly where that costs
+-- most and is wanted least.
+--
+-- Hence `"opened"`: drawn in a message asked for by name, not in the one that
+-- happens to be under the cursor. `inline_images = true` restores them
+-- everywhere, which is the right setting once the terminal stops doing that.
+function M.wanted(opts)
+  local mode = config.options.inline_images
+  if not mode then
+    return false
+  end
+  if opts and opts.preview and mode ~= true then
+    return false
+  end
+  return M.available()
+end
+
 -- Forget the images drawn in this buffer.
 --
 -- Every redraw rebuilds the lines underneath them, so placements from the
@@ -82,16 +106,20 @@ end
 --
 --   attachments : as listed above the body
 --   rows        : attachment index -> the buffer line its entry is on
+--   opts.preview: the body is following the cursor rather than opened
 --
 -- Extraction is per part and asynchronous, so a message with six images does
 -- not hold the screen while they are written out. Each placement checks the
 -- buffer is still valid, because the reader may have moved on.
-function M.show(buf, id, attachments, rows)
-  if not M.available() then
+function M.show(buf, id, attachments, rows, opts)
+  -- Cleared even when nothing will be drawn: the buffer is reused for every
+  -- message, so a picture from the last one would otherwise stay on rows that
+  -- now belong to this one.
+  M.clear(buf)
+
+  if not M.wanted(opts) then
     return
   end
-
-  M.clear(buf)
 
   local notmuch = require("leterejo.notmuch")
 
