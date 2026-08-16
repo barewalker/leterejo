@@ -86,49 +86,76 @@ local function header_lines(text)
   return lines
 end
 
-local function find_win(name)
+-- One name per view, and never one per message.
+--
+-- Naming the buffer after the message looked tidier and quietly multiplied the
+-- windows: nothing could find the window already open, because it was showing a
+-- different name, so every press of `H` on a different message split another
+-- one. Four presses, five windows — at which point the body has no room left to
+-- preview into and every redraw paints six panes. It reads as the plugin having
+-- become slow, which is exactly what it was.
+local NAMES = { headers = "leterejo://headers", source = "leterejo://source" }
+
+-- The window one of these views is already in, whichever view it is. Both are
+-- the same question about the same message, so they share a place to be looked
+-- at rather than stacking up beside each other.
+local function find_win()
   for _, w in ipairs(vim.api.nvim_list_wins()) do
     local b = vim.api.nvim_win_get_buf(w)
-    if vim.api.nvim_buf_is_valid(b) and vim.api.nvim_buf_get_name(b) == name then
+    local n = vim.api.nvim_buf_is_valid(b) and vim.api.nvim_buf_get_name(b) or ""
+    if n == NAMES.headers or n == NAMES.source then
       return w, b
     end
   end
   return nil
 end
 
-local function draw(name, lines)
-  local win, buf = find_win(name)
+local function make_buffer(name, win, from)
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_name(buf, name)
+  vim.api.nvim_win_set_buf(win, buf)
 
-  if not win then
-    local from = vim.api.nvim_get_current_win()
-    vim.cmd("botright split")
-    win = vim.api.nvim_get_current_win()
-    buf = vim.api.nvim_create_buf(false, true)
-    vim.api.nvim_win_set_buf(win, buf)
-    vim.api.nvim_buf_set_name(buf, name)
+  -- Neovim's own mail syntax colours header names and quoted text, which is
+  -- exactly the shape of what is in here.
+  require("leterejo.ui.util").ensure_syntax(buf, "mail")
+  vim.bo[buf].buftype = "nofile"
+  -- Wiped when it stops being shown, so switching between the two views leaves
+  -- one buffer behind rather than a pile of them.
+  vim.bo[buf].bufhidden = "wipe"
+  vim.bo[buf].swapfile = false
 
-    -- Neovim's own mail syntax colours header names and quoted text, which is
-    -- exactly the shape of what is in here.
-    require("leterejo.ui.util").ensure_syntax(buf, "mail")
-    vim.bo[buf].buftype = "nofile"
-    vim.bo[buf].bufhidden = "wipe"
-    vim.bo[buf].swapfile = false
-    vim.wo[win].wrap = false
-    vim.wo[win].number = false
-
-    local function close()
-      if vim.api.nvim_win_is_valid(win) and #vim.api.nvim_list_wins() > 1 then
-        vim.api.nvim_win_close(win, true)
-      end
-      if vim.api.nvim_win_is_valid(from) then
-        vim.api.nvim_set_current_win(from)
-      end
+  local function close()
+    if vim.api.nvim_win_is_valid(win) and #vim.api.nvim_list_wins() > 1 then
+      vim.api.nvim_win_close(win, true)
     end
-
-    for _, key in ipairs({ "q", "<esc>" }) do
-      vim.keymap.set("n", key, close, { buffer = buf, nowait = true, silent = true })
+    if vim.api.nvim_win_is_valid(from) then
+      vim.api.nvim_set_current_win(from)
     end
   end
+
+  for _, key in ipairs({ "q", "<esc>" }) do
+    vim.keymap.set("n", key, close, { buffer = buf, nowait = true, silent = true })
+  end
+
+  return buf
+end
+
+local function draw(name, lines)
+  local from = vim.api.nvim_get_current_win()
+  local win, buf = find_win()
+
+  if not win then
+    vim.cmd("botright split")
+    win = vim.api.nvim_get_current_win()
+    buf = nil
+  end
+
+  if not buf or vim.api.nvim_buf_get_name(buf) ~= name then
+    buf = make_buffer(name, win, from)
+  end
+
+  vim.wo[win].wrap = false
+  vim.wo[win].number = false
 
   vim.bo[buf].modifiable = true
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
@@ -159,10 +186,10 @@ function M.open(account, id, opts)
     if opts.headers_only then
       local raw = header_lines(text)
       lines = config.options.headers_decoded ~= false and with_decodings(fields_in(raw)) or raw
-      name = "leterejo://headers/" .. tostring(id)
+      name = NAMES.headers
     else
       lines = vim.split(text:gsub("\r\n", "\n"), "\n", { plain = true })
-      name = "leterejo://source/" .. tostring(id)
+      name = NAMES.source
     end
 
     -- A buffer line cannot hold a newline, and a line arriving from a message
