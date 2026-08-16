@@ -141,6 +141,22 @@ the variable writes messages that cannot be searched properly.
                         Neovim cannot be typed into; this gives it a terminal
                         of its own.
 
+                        Sending offers this by itself when the store is shut,
+                        but only if the password command *fails* — gpg asked
+                        for a passphrase it does not have waits instead, and a
+                        send that waits is a send that hangs. So take the
+                        prompt away from the command himalaya runs: >
+
+    password.command = [
+      "env", "PASSWORD_STORE_GPG_OPTS=--pinentry-mode cancel",
+      "pass", "show", "mail/work" ]
+<
+                        `pass` hands that to gpg, which then fails at once
+                        with "Operation cancelled" — measured at eight seconds
+                        and still waiting without it, exit 2 in under a second
+                        with it. `unlock_command` is the opposite case and
+                        must not carry the option: it is the one that asks.
+
 ==============================================================================
 5. MAPPINGS                                                *leterejo-mappings*
 
