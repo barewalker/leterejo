@@ -1482,6 +1482,18 @@ local function setup_keymaps(buf)
       end,
     },
     attachments = { desc = lang.t("desc_attachments"), handler = attachments },
+    raw_headers = {
+      desc = lang.t("desc_raw_headers"),
+      handler = on_row(function(e)
+        require("leterejo.ui.source").open(state.account, e.id, { headers_only = true })
+      end),
+    },
+    raw_source = {
+      desc = lang.t("desc_raw_source"),
+      handler = on_row(function(e)
+        require("leterejo.ui.source").open(state.account, e.id)
+      end),
+    },
     toggle_seen = { desc = lang.t("desc_toggle_seen"), handler = act("toggle_seen") },
     toggle_flagged = { desc = lang.t("desc_toggle_flagged"), handler = act("toggle_flagged") },
     trash = { desc = lang.t("desc_trash"), handler = act("trash") },

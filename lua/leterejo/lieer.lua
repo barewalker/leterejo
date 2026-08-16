@@ -141,6 +141,35 @@ local function syncable()
   return names
 end
 
+-- Whether another gmi holds this repository right now.
+--
+-- Asked before the timer starts one, because a gmi that cannot take the lock
+-- does not decline — it raises, and on Ubuntu an unhandled Python exception is
+-- caught by apport, which puts a crash report on the screen. Nothing is broken
+-- when that happens (the write path retries and the timer has another round in
+-- five minutes), but a dialog saying an application stopped unexpectedly is not
+-- what "the other one is still going" should look like.
+--
+-- It happens without anything being wrong: a second Neovim is a second timer on
+-- the same repository, and a long `gmi pull` holds the lock for hours.
+--
+-- Only the timer asks. A write must not skip — the change has to go up — so it
+-- still starts gmi and retries, which is what `retries` is for. And this is a
+-- glance, not a reservation: the lock can be taken in the moment between, which
+-- is why the retry stays.
+local function busy(dir, on_done)
+  local ok = pcall(vim.system, { "flock", "-n", dir .. "/.lock", "true" }, { text = true }, function(res)
+    vim.schedule(function()
+      on_done(res.code ~= 0)
+    end)
+  end)
+
+  -- No flock to ask with: carry on as before and let gmi decide.
+  if not ok then
+    on_done(false)
+  end
+end
+
 -- One round: sync each repository in turn, then let the screen catch up.
 --
 -- In turn rather than at once, because two gmi processes are two lots of
@@ -166,16 +195,34 @@ function M.tick(on_done)
       return on_done and on_done()
     end
 
-    M.sync(names[i], function(ok, res)
-      -- Say something when it breaks, but not once a minute for the same
-      -- reason. A silent background failure is worse than one line.
-      if not ok and res ~= last_failure then
-        last_failure = res
-        vim.notify(lang.t("prefix") .. lang.t("sync_failed", tostring(res)), vim.log.levels.WARN)
-      elseif ok then
-        last_failure = nil
+    local name = names[i]
+
+    local function go()
+      M.sync(name, function(ok, res)
+        -- Say something when it breaks, but not once a minute for the same
+        -- reason. A silent background failure is worse than one line.
+        if not ok and res ~= last_failure then
+          last_failure = res
+          vim.notify(lang.t("prefix") .. lang.t("sync_failed", tostring(res)), vim.log.levels.WARN)
+        elseif ok then
+          last_failure = nil
+        end
+        step()
+      end)
+    end
+
+    local dir = repository(name)
+    if not dir then
+      return go()
+    end
+
+    busy(dir, function(taken)
+      if taken then
+        -- Someone else is working in there. Nothing to report and nothing to
+        -- wait for: the next round is five minutes away.
+        return step()
       end
-      step()
+      go()
     end)
   end
 

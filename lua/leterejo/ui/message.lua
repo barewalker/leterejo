@@ -216,6 +216,21 @@ local function toggle_headers()
   vim.notify(m.folded and lang.t("headers_now_folded") or lang.t("headers_now_shown"), vim.log.levels.INFO)
 end
 
+-- The message as it arrived, rather than as this screen renders it.
+--
+-- `h` only ever unfolds what notmuch handed over, which is four headers; this
+-- reads the file, so a Received chain or a DKIM signature can be looked at.
+local function raw(headers_only)
+  return function()
+    local m = state.current_message
+    if not m then
+      return vim.notify(lang.e("no_message_shown"), vim.log.levels.WARN)
+    end
+
+    require("leterejo.ui.source").open(m.account, m.id, { headers_only = headers_only })
+  end
+end
+
 -- Save the attachments of the displayed message, opening what we can.
 local function download()
   local m = state.current_message
@@ -290,6 +305,8 @@ local function setup_keymaps(buf)
     close_alt = { handler = close, desc = lang.t("desc_back") },
     attachments = { handler = download, desc = lang.t("desc_attachments") },
     toggle_headers = { handler = toggle_headers, desc = lang.t("desc_toggle_headers") },
+    raw_headers = { handler = raw(true), desc = lang.t("desc_raw_headers") },
+    raw_source = { handler = raw(false), desc = lang.t("desc_raw_source") },
     toggle_wrap = {
       desc = lang.t("desc_toggle_wrap"),
       handler = function()

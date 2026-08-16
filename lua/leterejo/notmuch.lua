@@ -137,6 +137,16 @@ local function decode_words(value)
   end))
 end
 
+-- Decode a header value for anything outside this module that shows one.
+--
+-- Exposed because the raw view needs it: a header block read off the disk is
+-- the only honest thing to show when the question is what actually arrived,
+-- and an encoded word in it is unreadable while still being the truth. Both go
+-- on the screen, which is why the decoding has to be reachable from there.
+function M.decode_header(value)
+  return decode_words(tostring(value or ""))
+end
+
 -- Read the headers this screen shows from a message file, decoded.
 --
 -- Because notmuch's own decoding stops at the first encoded word: a subject
@@ -701,6 +711,16 @@ local function strip_markers(text)
   end
 
   return table.concat(out, "\n")
+end
+
+-- The message exactly as it arrived, headers and all.
+--
+-- `show --format=text`, which M.read below uses, hands over four headers —
+-- Subject, From, To, Date — out of the twenty-eight a message here actually
+-- carries, so nothing built on it can answer "what did the server say about
+-- this". This reads the file.
+function M.raw(account, id, on_done)
+  run(account, { "show", "--format=raw", "--entire-thread=false", id_query(id) }, on_done)
 end
 
 function M.read(account, id, on_done)
@@ -1540,12 +1560,8 @@ function M.tag_for(account, mailbox)
   return mailbox
 end
 
--- The tags in use, which is what can be put on a message.
---
--- Not every tag is a place: unread and attachment describe a message rather
--- than say where it is, and offering them here would be offering to move mail
--- into "unread". Those are listed in `mailbox_hidden_tags`.
-function M.tags(account, on_done)
+-- Every tag in the index, in order.
+local function all_tags(account, on_done)
   run(account, { "search", "--format=json", "--output=tags", "*" }, function(ok, out)
     if not ok then
       return on_done(false, out)
@@ -1554,6 +1570,28 @@ function M.tags(account, on_done)
     local decoded_ok, tags = pcall(vim.json.decode, vim.trim(out) ~= "" and out or "[]")
     if not decoded_ok or type(tags) ~= "table" then
       return on_done(false, lang.t("err_notmuch"))
+    end
+
+    table.sort(tags)
+    on_done(true, tags)
+  end)
+end
+
+-- The tags that can be put on a message.
+--
+-- Fewer than all of them, because some tags are facts about a message rather
+-- than something to do to one. `unread` and `attachment` describe it; Gmail's
+-- own tabs — `promotions` and the rest — are its classifier's output, so
+-- putting one on by hand means offering Gmail a label it will disagree with.
+-- Those are listed in `mailbox_hidden_tags`.
+--
+-- This is about *writing* only. Every one of them is still somewhere to look,
+-- and M.mailboxes below offers the lot: not being able to file mail under
+-- "promotions" is no reason not to be able to read what is filed there.
+function M.tags(account, on_done)
+  all_tags(account, function(ok, tags)
+    if not ok then
+      return on_done(false, tags)
     end
 
     local hidden = {}
@@ -1568,21 +1606,25 @@ function M.tags(account, on_done)
       end
     end
 
-    table.sort(names)
     on_done(true, names)
   end)
 end
 
--- Everything that can be looked at: the tags, and the views an account defined.
+-- Everything that can be looked at: every tag, and the views an account defined.
 --
--- The two are handed back apart. A view is a query with a name — the Takeout
--- archive is a directory, not a label — so it can be switched to but not put
--- on a message. Offering one where a tag was meant created a tag called
+-- Every tag, deliberately — including the ones `M.tags` leaves out. Those are
+-- kept off the list of places to *put* mail, which is a different question from
+-- where to look: Gmail's tabs cannot be applied by hand, and reading them is the
+-- whole reason for having taken them in.
+--
+-- Tags and views are handed back apart. A view is a query with a name — the
+-- Takeout archive is a directory, not a label — so it can be switched to but
+-- not put on a message. Offering one where a tag was meant created a tag called
 -- "Archive" here, which is exactly the confusion this keeps out.
 --
 --   on_done(ok, names, is_view)
 function M.mailboxes(account, on_done)
-  M.tags(account, function(ok, tags)
+  all_tags(account, function(ok, tags)
     if not ok then
       return on_done(false, tags)
     end
