@@ -249,8 +249,12 @@ function M.sync(account, on_done)
         -- succeeds; `u` in the list is what tries again.
         if timed_out(res) then
           stalled[account or ""] = true
+          -- The account, not the directory: the way out has to be a command
+          -- that can be pasted and will work. `cd` to the repository and run a
+          -- bare gmi and it reads the default notmuch configuration — another
+          -- account's index — and dies saying the repository is not in it.
           local seconds = math.max(1, math.floor((opts.timeout or 120000) / 1000))
-          announce(account, lang.t("err_lieer_timeout", seconds, dir))
+          announce(account, lang.t("err_lieer_timeout", seconds, tostring(account or "")))
           return on_done(false, nil, nil, "blocked")
         end
 

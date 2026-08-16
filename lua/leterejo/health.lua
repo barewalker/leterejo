@@ -239,7 +239,10 @@ local function check_repository(entry)
   if timeout <= 0 or timeout >= 600 then
     vim.health.warn(("%s: lieer's own timeout is %s seconds"):format(entry.name, tostring(decoded.timeout)), {
       "A stalled request hangs for that long without saying anything.",
-      "`gmi set --timeout 60` in the repository.",
+      -- Through the wrapper, never bare: a gmi run without it reads the
+      -- default notmuch configuration, which is another account's index, and
+      -- dies saying the repository is not in it.
+      ("`leterejo-env %s gmi set --timeout 60`"):format(entry.name),
     })
   end
 
