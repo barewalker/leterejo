@@ -454,8 +454,10 @@ function M.render(m, opts)
     vim.api.nvim_set_current_win(win)
   end
 
-  -- After the lines, so the rows the images hang off already exist.
-  require("leterejo.ui.images").show(buf, m.id, m.attachments or {}, rows)
+  -- After the lines, so the rows the images hang off already exist. Whether
+  -- this body is a preview is remembered on the message rather than read from
+  -- the options, because a redraw from `h` arrives without them.
+  require("leterejo.ui.images").show(buf, m.id, m.attachments or {}, rows, { preview = m.preview })
 end
 
 -- Open the body of an envelope.
@@ -513,6 +515,9 @@ function M.open(envelope, opts)
       attachments = attachments,
       tags = tags,
       folded = config.options.fold_headers,
+      -- `quiet` is what the preview asks with, and the preview is the one view
+      -- that is redrawn every time the cursor moves.
+      preview = opts.quiet == true,
     }
     M.render(state.current_message, opts)
   end
