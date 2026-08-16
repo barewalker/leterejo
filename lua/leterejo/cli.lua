@@ -13,15 +13,39 @@ local lang = require("leterejo.lang")
 local M = {}
 
 -- Detect a cold passphrase cache.
--- himalaya reports "Secret command error" when the pass call fails, followed by
--- "Timeout" once pinentry waits without an answer. Nothing resolves this until
--- the user types the passphrase in a terminal, so it needs its own message.
+--
+-- Three shapes arrive here, because there are three ways the same thing goes
+-- wrong. himalaya says "Secret command error" when the command it reads the
+-- password from failed at all. gpg says "decryption failed" alongside "Timeout"
+-- when pinentry drew a prompt nobody could answer — which is the state this
+-- whole path exists to get out of. And gpg told it may not prompt at all
+-- (`--pinentry-mode cancel`, which is how the prompt is kept off the terminal
+-- Neovim is holding) fails at once with "Operation cancelled" or "No pinentry",
+-- and then "No secret key".
+--
+-- That last one is also what a genuinely absent key says, so a real
+-- misconfiguration is reported as a locked store. The unlock offered next then
+-- fails and says so: a longer way round to the truth, but not a wrong one.
+local PASSPHRASE_MARKERS = {
+  "Secret command error",
+  "Operation cancelled",
+  "Operation canceled",
+  "No pinentry",
+  "No secret key",
+}
+
 local function is_passphrase_error(text)
   if not text then
     return false
   end
-  return text:match("Secret command error") ~= nil
-    or (text:match("decryption failed") ~= nil and text:match("Timeout") ~= nil)
+
+  for _, marker in ipairs(PASSPHRASE_MARKERS) do
+    if text:find(marker, 1, true) then
+      return true
+    end
+  end
+
+  return text:find("decryption failed", 1, true) ~= nil and text:find("Timeout", 1, true) ~= nil
 end
 
 -- Reduce failure output to one line worth showing the user.

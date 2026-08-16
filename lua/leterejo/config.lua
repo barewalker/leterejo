@@ -330,6 +330,22 @@ M.defaults = {
   -- instead, which has a terminal of its own for pinentry to use. What the
   -- command prints is discarded, since what it prints is the password.
   --
+  -- For this to be reached at all, **himalaya's own password command must be
+  -- unable to prompt**. gpg asked for a passphrase it does not have simply
+  -- waits, so a send hangs instead of failing, and a failure is what brings us
+  -- here. Take the prompt away from it in himalaya's configuration:
+  --
+  --   password.command = [
+  --     "env", "PASSWORD_STORE_GPG_OPTS=--pinentry-mode cancel",
+  --     "pass", "show", "mail/work" ]
+  --
+  -- `pass` hands that variable to gpg, which then fails at once with
+  -- "Operation cancelled" rather than drawing over the editor. Measured: eight
+  -- seconds and still waiting without it, exit 2 in under a second with it.
+  --
+  -- The command below is the opposite case and must *not* carry that option:
+  -- it is the one that is supposed to ask.
+  --
   -- Per account, set `unlock_command` in the accounts table above; this is the
   -- fallback. e.g. { "pass", "show", "mail/work" }
   unlock_command = nil,
