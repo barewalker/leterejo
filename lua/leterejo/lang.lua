@@ -33,7 +33,7 @@ strings.en = {
   err_notmuch = "notmuch failed to run",
   err_lieer = "gmi failed to run",
   err_lieer_busy = "Another gmi is using the repository; the change is only on this machine for now",
-  err_lieer_timeout = "The sync was stopped after %d seconds without finishing. lieer's push is all-or-nothing, so a large backlog cannot be worked through in that time and every round will end the same way. Run `gmi sync` in %s once, in a terminal where it may take as long as it needs (sync, not pull — it sends what is waiting here before the pull writes over it). Fetching is paused for this account until something succeeds; `u` tries again",
+  err_lieer_timeout = "The sync was stopped after %d seconds without finishing. lieer's push is all-or-nothing, so a large backlog cannot be worked through in that time and every round will end the same way. Run `leterejo-env %s gmi sync` once, in a terminal where it may take as long as it needs — through the wrapper, because a bare gmi reads the default notmuch configuration and fails; and sync rather than pull, because it sends what is waiting here before the pull writes over it. Fetching is paused for this account until something succeeds; `u` tries again",
   err_no_lieer_dir = "No lieer repository is configured for this account",
 
   -- envelope list
@@ -318,7 +318,7 @@ strings.ja = {
   err_notmuch = "notmuch の実行に失敗しました",
   err_lieer = "gmi の実行に失敗しました",
   err_lieer_busy = "別の gmi が同じメール木を使っています。変更はいまのところ手元だけです",
-  err_lieer_timeout = "同期が %d 秒で終わらず、打ち切られました。lieer の push は全部か無かなので、溜まった分をこの時間で捌くことはできず、何度やっても同じ終わり方をします。%s で `gmi sync` を 1 度、時間をかけられる端末で実行してください (pull ではなく sync。手元で待っている変更を、pull が上書きする前に送るため)。それまでこのアカウントの取得は止めます。`u` で再試行できます",
+  err_lieer_timeout = "同期が %d 秒で終わらず、打ち切られました。lieer の push は全部か無かなので、溜まった分をこの時間で捌くことはできず、何度やっても同じ終わり方をします。時間をかけられる端末で `leterejo-env %s gmi sync` を 1 度実行してください。素の gmi は既定の notmuch 設定を読んで失敗するので必ず包み script を通すこと。また pull ではなく sync — 手元で待っている変更を、pull が上書きする前に送るためです。それまでこのアカウントの取得は止めます。`u` で再試行できます",
   err_no_lieer_dir = "このアカウントの lieer のメール木が設定されていません",
 
   loading = "読み込み中…",
