@@ -313,7 +313,13 @@ M.defaults = {
   --                  gpg and so could not run unattended, while lieer holds an
   --                  OAuth token in a file and never touches gpg. The list
   --                  reloads afterwards without moving the reader, and a
-  --                  filtered list is left alone
+  --                  filtered list is left alone.
+  --
+  --                  This is the rate for the mailbox, not for the editor: a
+  --                  second Neovim finds the account already fetched and lets
+  --                  that round stand for its own, so two windows are not two
+  --                  lots of traffic to Gmail. Writes never skip — a change
+  --                  has to go up — so those wait for the repository instead
   lieer = {
     executable = "gmi",
     dir = nil,

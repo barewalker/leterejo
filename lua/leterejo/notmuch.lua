@@ -1228,7 +1228,20 @@ function M.refresh_addresses(account, on_done)
       end
     end
 
-    pcall(vim.fn.writefile, found, address_file(account))
+    -- Written beside itself and renamed into place, because more than one
+    -- Neovim may be collecting at once and `writefile` truncates before it
+    -- writes: a reader arriving in between gets half a file, and the halves of
+    -- two writers get each other. A rename is atomic, so every reader sees one
+    -- version or the other and never a mixture.
+    local path = address_file(account)
+    local temporary = path .. ".tmp-" .. tostring(vim.uv.os_getpid())
+
+    if pcall(vim.fn.writefile, found, temporary) then
+      if not pcall(vim.uv.fs_rename, temporary, path) then
+        pcall(vim.fn.delete, temporary)
+      end
+    end
+
     if on_done then
       on_done(found)
     end
