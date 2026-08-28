@@ -122,6 +122,41 @@ function M.account_for(address)
   return nil
 end
 
+-- The first Bcc address that is not one of your own, if there is one.
+--
+-- Bcc through himalaya is not blind. It collects the envelope from To, Cc and
+-- Bcc and then sends the message as it stands, so the Bcc header travels with
+-- the copy every other recipient receives. Measured against a local SMTP
+-- server — three RCPT TO lines, one DATA, `Bcc:` still in it — and confirmed
+-- in mail that arrived: the copy delivered to a To recipient carried it.
+--
+-- Taking the header out takes the delivery with it, because that header is
+-- where the envelope entry came from; removing it drops the recipient, which
+-- was measured the same way. There is no arrangement here that hides a third
+-- party, so sending stops instead of appearing to. Your own addresses are let
+-- through: what they reveal is that you keep a copy of your own mail.
+--
+-- `bcc_policy = "any"` turns this off for someone who knows all of that.
+function M.bcc_refused(bcc, from)
+  if (config.options.bcc_policy or "self") ~= "self" then
+    return nil
+  end
+
+  local mine = { [tostring(from or ""):lower()] = true }
+  for _, account in pairs(config.options.accounts or {}) do
+    if type(account.email) == "string" and account.email ~= "" then
+      mine[account.email:lower()] = true
+    end
+  end
+
+  for _, address in ipairs(bcc or {}) do
+    if not mine[tostring(address):lower()] then
+      return address
+    end
+  end
+  return nil
+end
+
 -- The header area ------------------------------------------------------------
 --
 -- One line per field, holding the value and nothing else. The name is drawn
@@ -423,6 +458,16 @@ local function assemble(strict)
     end
   end
 
+  -- Bcc is only ever yourself, and a message that would say otherwise is not
+  -- sent. See bcc_refused.
+  if strict then
+    local refused = M.bcc_refused(bcc, from)
+    if refused then
+      vim.notify(lang.e("bcc_not_self", refused), vim.log.levels.ERROR)
+      return nil
+    end
+  end
+
   -- Assemble. Subject and body encoding are himalaya's work.
   --
   -- Always `compose`, even for a reply. `message reply` wants the id the
@@ -476,7 +521,32 @@ local function assemble(strict)
     table.insert(extra, "References: " .. (pending.references or pending.reply_to))
   end
 
-  return { buf = buf, args = args, account = account, from = from, bcc = bcc, extra = extra }
+  -- What the message was written with. himalaya sends none, and every other
+  -- client sends one; a filter comparing a message against the mail it usually
+  -- sees has one fewer thing to find missing. Named honestly — a client
+  -- claiming to be Outlook is what the forgery rules look for.
+  local mailer = config.options.x_mailer
+  if mailer == nil then
+    mailer = "leterejo"
+  end
+  if type(mailer) == "string" and vim.trim(mailer) ~= "" then
+    table.insert(extra, "X-Mailer: " .. vim.trim(mailer))
+  end
+
+  -- The name that goes on From, from the account the message goes through.
+  -- An address no account owns — the alias case above — is written as that
+  -- account's owner, which is who is sending it either way.
+  local display = ((config.options.accounts or {})[account] or {}).display_name
+
+  return {
+    buf = buf,
+    args = args,
+    account = account,
+    from = from,
+    display = display,
+    bcc = bcc,
+    extra = extra,
+  }
 end
 
 -- Give the Message-ID the domain the message is from.
@@ -490,8 +560,18 @@ end
 --     <000901dcb27f$8bbccff0$a3366fd0$@work.example>
 --
 -- The unique part is himalaya's; only the host after it is replaced.
+--
+-- Whether that is done at all is `message_id_domain`, and it is read here
+-- rather than with `or`: the option is "from" by default and `false` to leave
+-- himalaya's, and `false or "from"` is "from" — which read the setting as its
+-- own opposite and rewrote the Message-ID of everyone who turned it off.
+local function rewriting_message_id()
+  local set = config.options.message_id_domain
+  return set == nil or set == "from"
+end
+
 local function with_sender_domain(message, from)
-  if (config.options.message_id_domain or "from") ~= "from" then
+  if not rewriting_message_id() then
     return message
   end
 
@@ -520,6 +600,167 @@ local function with_sender_domain(message, from)
   return out
 end
 
+-- Give the Date the offset this machine keeps.
+--
+-- himalaya writes it in UTC. Every other client writes the sender's own
+-- offset, and the two name the same instant, so nothing depends on this — but
+-- a header is read by people as well as by programs, and a message written in
+-- Tokyo at nine in the evening should not say noon.
+--
+-- The names are written out here rather than taken from os.date's `%a` and
+-- `%b`, which follow the locale: under a Japanese one those come back in
+-- Japanese, and a Date header may only be English. The numeric offset (`%z`)
+-- has no such problem.
+local DATE_MONTH_NUMBER = {
+  Jan = 1, Feb = 2, Mar = 3, Apr = 4, May = 5, Jun = 6,
+  Jul = 7, Aug = 8, Sep = 9, Oct = 10, Nov = 11, Dec = 12,
+}
+local DATE_MONTHS = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" }
+local DATE_DAYS = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" }
+
+local function rewriting_date()
+  local set = config.options.date_zone
+  return set == nil or set == "local"
+end
+
+local function with_local_date(message)
+  if not rewriting_date() then
+    return message
+  end
+
+  -- Returning nil from the replacement keeps the match as it was, which is
+  -- what an unreadable date should do: it is himalaya's own header, and a
+  -- guess here would be worse than leaving it.
+  local function rewritten(head)
+    return function(day, month, year, hour, min, sec, sign, offset_hours, offset_minutes)
+      local number = DATE_MONTH_NUMBER[month]
+      if not number then
+        return nil
+      end
+
+      -- The instant the header names, in seconds. os.time reads its table as
+      -- local time, so this machine's offset is measured and taken back out
+      -- before the header's own offset is.
+      local wall = os.time({
+        year = tonumber(year),
+        month = number,
+        day = tonumber(day),
+        hour = tonumber(hour),
+        min = tonumber(min),
+        sec = tonumber(sec),
+        isdst = false,
+      })
+      if not wall then
+        return nil
+      end
+
+      local here = os.difftime(wall, os.time(os.date("!*t", wall)))
+      local there = (tonumber(offset_hours) * 3600 + tonumber(offset_minutes) * 60)
+        * (sign == "-" and -1 or 1)
+      local at = wall + here - there
+
+      local t = os.date("*t", at)
+      return string.format(
+        "%sDate: %s, %02d %s %04d %02d:%02d:%02d %s",
+        head,
+        DATE_DAYS[t.wday],
+        t.day,
+        DATE_MONTHS[t.month],
+        t.year,
+        t.hour,
+        t.min,
+        t.sec,
+        os.date("%z", at)
+      )
+    end
+  end
+
+  local body = "Date:%s*%a+,%s*(%d+)%s+(%a+)%s+(%d+)%s+(%d+):(%d+):(%d+)%s*([+-])(%d%d)(%d%d)"
+
+  local out, n = message:gsub("^" .. body, rewritten(""), 1)
+  if n == 0 then
+    out = message:gsub("\n" .. body, rewritten("\n"), 1)
+  end
+  return out
+end
+
+-- Split text into pieces of whole characters, none longer than `bytes`.
+--
+-- An encoded word may not be cut through the middle of a character: the
+-- decoder reads each word on its own, and half of a character is not one.
+local function utf8_pieces(text, bytes)
+  local out, piece = {}, ""
+  for char in tostring(text):gmatch("[\1-\127\194-\244][\128-\191]*") do
+    if piece ~= "" and #piece + #char > bytes then
+      table.insert(out, piece)
+      piece = ""
+    end
+    piece = piece .. char
+  end
+  if piece ~= "" then
+    table.insert(out, piece)
+  end
+  return out
+end
+
+-- A display name as a header may carry it.
+--
+-- ASCII goes as it is, quoted where it holds something the header grammar
+-- would read as syntax rather than as a name. Anything else becomes RFC 2047
+-- encoded words: base64 of UTF-8, 45 bytes at a time, which is 72 columns per
+-- word — 78 once "From: " is in front of the first one.
+local function as_display_name(name)
+  name = vim.trim(tostring(name or ""))
+  if name == "" then
+    return nil
+  end
+
+  if not name:find("[\128-\255]") then
+    if name:find('[%c"\\(),.:;<>@%[%]]') then
+      return '"' .. name:gsub('[\\"]', "\\%0") .. '"'
+    end
+    return name
+  end
+
+  local words = {}
+  for _, piece in ipairs(utf8_pieces(name, 45)) do
+    table.insert(words, "=?UTF-8?B?" .. vim.base64.encode(piece) .. "?=")
+  end
+  -- Folded, because more than one encoded word must be separated by a line
+  -- break and a space to be read back as a single name.
+  return table.concat(words, "\n ")
+end
+
+-- Put the display name on From.
+--
+-- himalaya v2 has no setting for it — v1's `display-name` was removed — and
+-- `--from` is not parsed as an address. Given `Name <addr>` it wraps the whole
+-- string in angle brackets:
+--
+--     From: <山田太郎 <you@work.example>>
+--
+-- So the address is passed alone, and the name is put on here. Replaced
+-- through a function so a name is never read as a `%` escape, and asked for
+-- twice for the reason given above with_sender_domain.
+local function with_display_name(message, from, name)
+  local written = as_display_name(name)
+  if not written then
+    return message
+  end
+
+  local line = "From: " .. written .. " <" .. from .. ">"
+
+  local out, n = message:gsub("^From:[^\n]*", function()
+    return line
+  end, 1)
+  if n == 0 then
+    out = message:gsub("\nFrom:[^\n]*", function()
+      return "\n" .. line
+    end, 1)
+  end
+  return out
+end
+
 -- Put the threading headers into a message himalaya has already built.
 --
 -- After the first line, which keeps whatever himalaya chose to put first, and
@@ -537,7 +778,27 @@ local function with_headers(message, extra)
   return table.concat(out, "\n")
 end
 
--- Send.
+-- Everything that has to be corrected in the message himalaya built.
+--
+-- The order matters in one place: with_headers writes after the first line,
+-- which is From, and with_display_name may fold From over two lines. Naming
+-- goes last so the threading headers cannot land inside it.
+local function corrected(message, m)
+  message = with_headers(message, m.extra)
+  message = with_sender_domain(message, m.from)
+  message = with_local_date(message)
+  return with_display_name(message, m.from, m.display)
+end
+
+-- Whether any of that applies. When none does, himalaya can build the message
+-- and send or file it in one step, without it coming back here.
+local function needs_correcting(m)
+  return #m.extra > 0
+    or rewriting_message_id()
+    or rewriting_date()
+    or as_display_name(m.display) ~= nil
+end
+
 -- Send.
 --
 -- One step for a plain message: himalaya builds it and sends it. Two for a
@@ -597,7 +858,7 @@ function M.send()
   end
 
   -- Straight through, when there is nothing to correct on the way.
-  if #m.extra == 0 and (config.options.message_id_domain or "from") ~= "from" then
+  if not needs_correcting(m) then
     local args = vim.deepcopy(m.args)
     table.insert(args, "--send")
     if keep then
@@ -627,7 +888,7 @@ function M.send()
         return failed(out2, kind2)
       end
       done()
-    end, { stdin = with_sender_domain(with_headers(message, m.extra), m.from) })
+    end, { stdin = corrected(message, m) })
   end)
 end
 
@@ -679,8 +940,10 @@ function M.upload()
     vim.notify(lang.t("draft_uploaded", mailbox), vim.log.levels.INFO)
   end
 
-  -- Nothing to add: himalaya can build it and file it in one step.
-  if #m.extra == 0 then
+  -- Nothing to add: himalaya can build it and file it in one step. The same
+  -- question as sending, and asked the same way — a draft that goes up with
+  -- this machine's hostname in its Message-ID is sent from the webmail with it.
+  if not needs_correcting(m) then
     local args = vim.deepcopy(m.args)
     table.insert(args, "--save=" .. mailbox)
     return cli.text(args, m.account, done)
@@ -693,7 +956,7 @@ function M.upload()
       return done(false, message)
     end
     cli.text({ "message", "add", "--mailbox=" .. mailbox }, m.account, done, {
-      stdin = with_sender_domain(with_headers(message, m.extra), m.from),
+      stdin = corrected(message, m),
     })
   end)
 end

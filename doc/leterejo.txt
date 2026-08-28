@@ -361,6 +361,14 @@ message_id_domain
                 "from" (default) puts the sending domain in the Message-ID,
                 where himalaya would put this machine's hostname; false leaves
                 himalaya's.
+date_zone       "local" (default) writes Date at this machine's offset, where
+                himalaya writes UTC; false leaves himalaya's.
+x_mailer        What goes in X-Mailer, which himalaya writes not at all.
+                Default "leterejo"; false for no such header.
+bcc_policy      "self" (default) refuses to send a message that Bcc's anyone
+                but you, because Bcc through himalaya is not blind — the
+                header reaches every recipient, and removing it removes the
+                delivery. "any" sends it anyway.
 auto_bcc        Addresses to Bcc automatically, keyed by account or by the
                 address in From.
 lieer.interval  Minutes between fetches; 0 for none.

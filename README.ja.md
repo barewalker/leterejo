@@ -66,6 +66,7 @@ require("leterejo").setup({
   accounts = {
     work = {
       email = "you@example.com",       -- himalaya v2 はこれが無いと送信しない
+      display_name = "山田太郎",     -- From に付く名前 (himalaya には無い)
       lieer_dir = "~/Mail/work-lieer",
       notmuch_config = "~/.config/notmuch/work",
     },

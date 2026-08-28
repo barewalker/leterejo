@@ -100,6 +100,11 @@ M.defaults = {
   --   email      : your own address on that account. Needed to fill From, and
   --                to drop yourself from a reply-all. himalaya's
   --                `account list` does not report addresses, so it goes here
+  --   display_name : the name that goes on From beside the address. himalaya
+  --                v2 has no setting for it and does not parse one out of
+  --                `--from` — it wraps whatever it is given in angle brackets
+  --                — so the name is put on the built message here. Anything
+  --                outside ASCII is encoded (RFC 2047); nothing to escape
   --   readonly   : refuse every operation that would modify mail
   --   send_only  : this account is only somewhere to send from, so do not
   --                offer it as somewhere to read. An account whose mail is not
@@ -376,6 +381,36 @@ M.defaults = {
   -- Correcting it means letting himalaya build the message and then sending
   -- that, which is one more local run of himalaya per message.
   message_id_domain = "from",
+
+  -- What offset the Date header carries.
+  --
+  --   "local"  this machine's own offset (the default)
+  --   false    whatever himalaya put there, which is UTC
+  --
+  -- The instant is the same either way. It is the one header a person reads
+  -- straight off the message, and every other client writes it in local time.
+  date_zone = "local",
+
+  -- What goes in X-Mailer, or false for no such header.
+  --
+  -- himalaya writes none. Every other client writes one, so its absence is
+  -- something a filter can notice. Name it honestly: claiming to be Outlook is
+  -- exactly what the forgery rules are built to catch.
+  x_mailer = "leterejo",
+
+  -- Who may be put in Bcc.
+  --
+  --   "self"  only your own addresses — the ones in the accounts table above,
+  --           and whatever the message is being sent as (the default)
+  --   "any"   anyone, and it will not be blind
+  --
+  -- Bcc through himalaya is not blind. The envelope is collected from To, Cc
+  -- and Bcc, and the message is then sent as it stands: the Bcc header reaches
+  -- everyone the message reaches. Removing the header before sending removes
+  -- the delivery with it, since that header is where the envelope entry came
+  -- from — so there is no arrangement here that hides a third party, and the
+  -- default refuses to send rather than appear to.
+  bcc_policy = "self",
 
   -- Where a copy of a sent message is kept.
   --

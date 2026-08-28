@@ -460,7 +460,12 @@ local function check_config(config)
       local suffix = #notes > 0 and ("  [" .. table.concat(notes, ", ") .. "]") or ""
 
       if a.email and a.email ~= "" then
-        vim.health.ok(name .. ": " .. a.email .. suffix)
+        -- As the recipient will see it, which is the point of the name.
+        local shown = a.email
+        if type(a.display_name) == "string" and vim.trim(a.display_name) ~= "" then
+          shown = vim.trim(a.display_name) .. " <" .. a.email .. ">"
+        end
+        vim.health.ok(name .. ": " .. shown .. suffix)
       elseif a.readonly then
         vim.health.ok(name .. ": no address, but read-only" .. suffix)
       else
