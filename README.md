@@ -82,6 +82,7 @@ require("leterejo").setup({
   accounts = {
     work = {
       email = "you@example.com",       -- himalaya v2 will not send without it
+      display_name = "Ada Lovelace",   -- the name on From; himalaya has none
       lieer_dir = "~/Mail/work-lieer",
       notmuch_config = "~/.config/notmuch/work",
     },

@@ -343,6 +343,13 @@ signatures      <leader>hg で選べる名前付きの署名。
 message_id_domain
                 "from" (既定) は Message-ID に差出人のドメインを入れる。
                 himalaya は機械のホスト名を入れる。false でそのまま。
+date_zone       "local" (既定) は Date をこの機械の時差で書く。himalaya は
+                UTC で書く。false でそのまま。
+x_mailer        X-Mailer に入れる文字列。himalaya は付けない。既定
+                "leterejo"、false でヘッダ自体を付けない。
+bcc_policy      "self" (既定) は自分以外を Bcc に入れたメールの送信を拒む。
+                himalaya の Bcc は隠れず、ヘッダが宛先全員に届き、消すと
+                配送も消えるため。"any" ならそのまま送る。
 auto_bcc        自動で Bcc に入れるアドレス。アカウント名でも From のアドレス
                 でも引ける。
 lieer.interval  取得の間隔 (分)。0 で行わない。
