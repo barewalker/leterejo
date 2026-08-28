@@ -322,10 +322,20 @@ cannot share one: tags are that account's labels, both accounts have an
 would carry the union of their labels, and the next push would offer each of
 them the other's.
 
+An account whose mail something else fetches — mbsync against an IMAP server,
+say — wants no `lieer_dir`: give it a `notmuch_config` and the `folders` or
+`queries` that say what is in the store, since a Maildir of real folders has no
+tag standing for the inbox. Tagging then stays on this machine, and nothing is
+said about a push path that was never meant to exist.
+
 Per-account options, under `accounts.<name>`:
 
     email               your address there. himalaya v2 will not send without
                         it, and reply-all uses it to drop you from the list
+    display_name        the name that goes on From beside the address, e.g.
+                        "Ada Lovelace". himalaya has no setting for it and
+                        does not parse one, so leterejo writes it. Non-ASCII
+                        is encoded
     lieer_dir           the lieer repository
     notmuch_config      the notmuch configuration naming its index
     send_only           somewhere to send from, with nothing to read. Kept out

@@ -307,10 +307,19 @@ From がどのアカウントで送るかを決める。アドレスはそれを
 notmuch は Message-ID でメールをまとめる。両方宛のメールが 1 通にまとまって双
 方のラベルを持ち、次の押し出しでそれぞれに相手のラベルを送ることになる。
 
+lieer 以外が取ってくるアカウント (会社の IMAP を mbsync で落とす等) に
+`lieer_dir` は要らない。`notmuch_config` と、その置き場の中身を指す `folders`
+または `queries` を与える。実フォルダの Maildir には受信箱を表すタグが無いた
+めで、`folders` が無いと受信箱が空になる。タグ付けは手元だけに残り、押し出す先
+が無いことを毎回言われることもない。
+
 `accounts.<名前>` に置ける項目:
 
     email               そのアカウントでの自分のアドレス。himalaya v2 はこれが
                         無いと送信しない。全員返信で自分を除くのにも使う
+    display_name        From でアドレスの前に付く名前。例: "山田太郎"。
+                        himalaya には設定が無く、渡しても解釈しないので
+                        leterejo が書く。非 ASCII は符号化される
     lieer_dir           lieer のメール木
     notmuch_config      その索引を指す notmuch の設定
     send_only           送るためだけの口。読む先の一覧に出さない

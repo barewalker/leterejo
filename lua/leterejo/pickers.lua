@@ -146,13 +146,7 @@ function M.pick_account()
       -- another account's mail under this one's name. Say so: it looks like
       -- the switch worked, and every count and every write would be about
       -- someone else's mailbox.
-      local a = (config.options.accounts or {})[name] or {}
-      local has_own = a.lieer_dir
-        or (config.options.lieer or {}).dir
-        or (a.queries and next(a.queries))
-        or (a.folders and next(a.folders))
-
-      if not has_own then
+      if not config.has_own_mail(name) then
         vim.notify(lang.e("account_not_synced", name), vim.log.levels.WARN)
       end
     end)
