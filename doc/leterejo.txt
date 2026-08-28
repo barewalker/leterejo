@@ -350,7 +350,11 @@ Per-account options, under `accounts.<name>`:
     signature           what a message ends with
     queries             mailbox name -> a notmuch query, for a view that is
                         not a tag
-    folders             mailbox name -> a Maildir directory
+    folders             mailbox name -> a Maildir directory. In a store with
+                        real directories this is what filing means too:
+                        archiving moves the file into the `archive` directory
+    sync_lock           the lock file the fetcher holds while it writes. Taken
+                        before moving files
 
 ==============================================================================
 10. OPTIONS                                                 *leterejo-options*

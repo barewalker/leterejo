@@ -126,7 +126,14 @@ M.defaults = {
   --                both into one entry carrying the union of their labels —
   --                which the next push would then offer to each of them
   --   folders    : mailbox name -> the directory a sync tool actually made,
-  --                e.g. { inbox = "gmail/INBOX" }
+  --                e.g. { inbox = "gmail/INBOX" }. In a store with real
+  --                directories this is also what filing means: archiving a
+  --                message moves its file into the `archive` directory, since
+  --                there is no inbox tag to take off
+  --   sync_lock  : the lock file whatever fetches this account's mail holds
+  --                while it writes, e.g. "~/.cache/work-mail-sync.lock". Taken
+  --                before files are moved, so a rename cannot land in the
+  --                middle of a running fetch
   --   queries    : mailbox name -> a notmuch query, for views that are not one
   --                directory, e.g. { inbox = "tag:inbox" }
   --   query_for  : function(mailbox) -> notmuch query, when the two tables

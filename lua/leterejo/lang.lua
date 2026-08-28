@@ -31,6 +31,10 @@ strings.en = {
   err_json = "Could not parse JSON: %s",
   err_generic = "himalaya failed to run",
   err_notmuch = "notmuch failed to run",
+  err_no_mail_root = "notmuch does not say where this account's mail is kept",
+  err_no_such_folder = "There is no `%s` directory in this account's store",
+  err_move = "The files could not be moved",
+  err_move_declined = "%d stayed where they were: the destination already holds a file of that name",
   err_lieer = "gmi failed to run",
   err_lieer_busy = "Another gmi is using the repository; the change is only on this machine for now",
   err_lieer_timeout = "The sync was stopped after %d seconds without finishing. lieer's push is all-or-nothing, so a large backlog cannot be worked through in that time and every round will end the same way. Run `leterejo-env %s gmi sync` once, in a terminal where it may take as long as it needs — through the wrapper, because a bare gmi reads the default notmuch configuration and fails; and sync rather than pull, because it sends what is waiting here before the pull writes over it. Fetching is paused for this account until something succeeds; `u` tries again",
@@ -170,6 +174,11 @@ strings.en = {
   archived = "Archived",
   trashed = "Moved to the trash",
   spammed = "Reported as spam",
+
+  -- Filing where a mailbox is a directory rather than a tag.
+  no_folder_for = "This account files mail in directories and has none for `%s`",
+  nothing_to_move = "Nothing moved: no file of this message is in the mailbox on screen",
+  moved_index_stale = "Moved, but the index could not be updated (%s). The next fetch will bring it back in step",
 
   -- the same, done to a selection
   marked_read_many = "%d marked as read",
@@ -321,6 +330,10 @@ strings.ja = {
   err_json = "JSON を解釈できませんでした: %s",
   err_generic = "himalaya の実行に失敗しました",
   err_notmuch = "notmuch の実行に失敗しました",
+  err_no_mail_root = "notmuch がこのアカウントのメールの置き場所を答えません",
+  err_no_such_folder = "このアカウントの置き場に `%s` というディレクトリがありません",
+  err_move = "ファイルを移せませんでした",
+  err_move_declined = "%d 件はそのままです。同じ名前のファイルが移動先にあります",
   err_lieer = "gmi の実行に失敗しました",
   err_lieer_busy = "別の gmi が同じメール木を使っています。変更はいまのところ手元だけです",
   err_lieer_timeout = "同期が %d 秒で終わらず、打ち切られました。lieer の push は全部か無かなので、溜まった分をこの時間で捌くことはできず、何度やっても同じ終わり方をします。時間をかけられる端末で `leterejo-env %s gmi sync` を 1 度実行してください。素の gmi は既定の notmuch 設定を読んで失敗するので必ず包み script を通すこと。また pull ではなく sync — 手元で待っている変更を、pull が上書きする前に送るためです。それまでこのアカウントの取得は止めます。`u` で再試行できます",
@@ -450,6 +463,11 @@ strings.ja = {
   archived = "保管しました",
   trashed = "ごみ箱へ移しました",
   spammed = "迷惑メールとして報告しました",
+
+  -- メールボックスがタグではなくディレクトリのとき。
+  no_folder_for = "このアカウントはディレクトリで仕分けます。`%s` にあたるものがありません",
+  nothing_to_move = "動きませんでした。今見ているメールボックスにこのメールのファイルがありません",
+  moved_index_stale = "移しましたが索引を更新できませんでした (%s)。次の取り込みで揃います",
 
   marked_read_many = "%d 件を既読にしました",
   marked_unread_many = "%d 件を未読に戻しました",

@@ -1859,6 +1859,184 @@ function M.tag_for(account, mailbox)
   return mailbox
 end
 
+-- Moving mail between real directories ------------------------------------
+--
+-- A mailbox is a tag here because on Gmail a mailbox is a label: archiving is
+-- `-inbox` and nothing moves on disk. A store that something else fills has
+-- real directories instead, and no tag stands for its inbox — so taking one off
+-- would change nothing at all while still reporting success. There the message
+-- has to be moved.
+--
+-- Whether that is safe was the open question, since the fetcher could notice
+-- the file gone and pull it down again on its next round. It does not: mbsync
+-- records in `.mbsyncstate` what it has already delivered, and under
+-- `Remove None` the far side keeps its copy either way. Checked on 2026-08-28
+-- against a real store — three consecutive runs of the fetching script, and the
+-- message stayed where it had been put.
+
+-- The directory a mailbox stands for, or nil when it stands for a tag.
+function M.folder_of(account, mailbox)
+  if not mailbox then
+    return nil
+  end
+  local a = (config.options.accounts or {})[account] or {}
+  return (a.folders or {})[mailbox]
+end
+
+-- Where this account's mail begins on disk.
+--
+-- Asked of notmuch rather than assembled from the account name: the index is
+-- what knows, and a guess would be wrong the first time someone keeps their
+-- mail somewhere else. Answered once per index and kept.
+local roots = {}
+
+local function mail_root(account, on_done)
+  local key = notmuch_config(account) or "(default)"
+  if roots[key] then
+    return on_done(true, roots[key])
+  end
+
+  run(account, { "config", "get", "database.path" }, function(ok, out)
+    if not ok then
+      return on_done(false, out)
+    end
+
+    local path = vim.trim(out)
+    if path == "" then
+      return on_done(false, lang.t("err_no_mail_root"))
+    end
+
+    roots[key] = path
+    on_done(true, path)
+  end)
+end
+
+-- Hand a batch of files to `mv`, behind the fetcher's lock where there is one.
+--
+-- One process for the batch rather than a rename each: the careful cases
+-- already live in `mv`. `-n` so a name already taken at the destination leaves
+-- the file where it is instead of writing over another message — it says
+-- nothing when it declines, which is why the disk is asked afterwards.
+local function move_batch(account, files, dest_dir, on_done)
+  local a = (config.options.accounts or {})[account] or {}
+
+  local cmd = {}
+  if a.sync_lock then
+    -- The fetcher holds this while it writes, and waiting behind it is the
+    -- point: a file renamed out from under mbsync mid-run fails that run, and
+    -- a failed run is a notice nobody needed.
+    vim.list_extend(cmd, { "flock", "-w", "30", vim.fn.expand(a.sync_lock) })
+  end
+  vim.list_extend(cmd, { "mv", "-n", "--" })
+  vim.list_extend(cmd, files)
+  table.insert(cmd, dest_dir .. "/")
+
+  vim.system(cmd, { text = true }, function(res)
+    vim.schedule(function()
+      if res.code ~= 0 then
+        local first = (res.stderr or ""):match("([^\n]+)")
+        return on_done(false, first or lang.t("err_move"))
+      end
+
+      local left = 0
+      for _, f in ipairs(files) do
+        if vim.uv.fs_stat(f) then
+          left = left + 1
+        end
+      end
+      if left > 0 then
+        return on_done(false, lang.t("err_move_declined", left))
+      end
+
+      on_done(true, #files)
+    end)
+  end)
+end
+
+-- Move every message named out of one directory and into another.
+--
+-- Only the files sitting in `from` move. A message can have more than one file
+-- — the same mail delivered twice, or a copy written out of an older archive —
+-- and the ones elsewhere are not this operation's business. Two files of one
+-- message in the destination is likewise left alone: notmuch shows one message
+-- either way, and dropping a copy to save the space would be this operation
+-- deleting mail nobody asked it to delete.
+--
+--   on_done(ok, how_many | error)
+function M.move_to_folder(account, ids, from, to, on_done)
+  if #ids == 0 then
+    return on_done(true, 0)
+  end
+
+  mail_root(account, function(ok, root)
+    if not ok then
+      return on_done(false, root)
+    end
+
+    local dest_dir = root .. "/" .. to .. "/cur"
+    local stat = vim.uv.fs_stat(dest_dir)
+    if not stat or stat.type ~= "directory" then
+      return on_done(false, lang.t("err_no_such_folder", to))
+    end
+
+    per_group(account, ids, function(group)
+      return { "search", "--output=files", "--", group }
+    end, function(found, outs)
+      if not found then
+        return on_done(false, outs)
+      end
+
+      local prefix = root .. "/" .. from .. "/"
+      local files = {}
+      for _, out in ipairs(outs) do
+        for line in tostring(out):gmatch("[^\n]+") do
+          if line:sub(1, #prefix) == prefix then
+            table.insert(files, line)
+          end
+        end
+      end
+
+      if #files == 0 then
+        return on_done(true, 0)
+      end
+
+      -- In batches, for the reason the ids are: a few thousand paths in one
+      -- argument list is more than the kernel accepts.
+      local BATCH, moved = 250, 0
+
+      local function step(start)
+        if start > #files then
+          return on_done(true, moved)
+        end
+
+        local slice = {}
+        for i = start, math.min(start + BATCH - 1, #files) do
+          table.insert(slice, files[i])
+        end
+
+        move_batch(account, slice, dest_dir, function(moved_ok, res)
+          if not moved_ok then
+            return on_done(false, res)
+          end
+          moved = moved + res
+          step(start + BATCH)
+        end)
+      end
+
+      step(1)
+    end)
+  end)
+end
+
+-- Bring the index back in step after files moved.
+--
+-- Part of the operation rather than something left to the next fetch: the
+-- screen is drawn from the index, so until this returns the message is still
+-- filed where it was.
+function M.reindex(account, on_done)
+  run(account, { "new", "--quiet" }, on_done)
+end
+
 -- Every tag in the index, in order.
 local function all_tags(account, on_done)
   run(account, { "search", "--format=json", "--output=tags", "*" }, function(ok, out)
