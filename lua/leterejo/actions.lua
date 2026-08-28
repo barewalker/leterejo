@@ -209,7 +209,14 @@ local function push(account, id, change)
   end
 
   if not lieer.configured(account) then
-    return vim.notify(lang.e("no_lieer_dir_note"), vim.log.levels.WARN)
+    -- Nothing to hand it to. When the mail came from something else (mbsync
+    -- against an IMAP server, say) that is the arrangement rather than an
+    -- omission, and saying it on every tag would be noise about a decision
+    -- already made. Say it only when the account looks like it wanted one.
+    if not config.has_own_mail(account) then
+      vim.notify(lang.e("no_lieer_dir_note"), vim.log.levels.WARN)
+    end
+    return
   end
 
   lieer.sync(account, function(ok, res, refused, kind)
@@ -502,7 +509,14 @@ local function push_many(account, ids, change)
   end
 
   if not lieer.configured(account) then
-    return vim.notify(lang.e("no_lieer_dir_note"), vim.log.levels.WARN)
+    -- Nothing to hand it to. When the mail came from something else (mbsync
+    -- against an IMAP server, say) that is the arrangement rather than an
+    -- omission, and saying it on every tag would be noise about a decision
+    -- already made. Say it only when the account looks like it wanted one.
+    if not config.has_own_mail(account) then
+      vim.notify(lang.e("no_lieer_dir_note"), vim.log.levels.WARN)
+    end
+    return
   end
 
   lieer.sync(account, function(ok, res, refused, kind)

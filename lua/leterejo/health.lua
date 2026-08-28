@@ -110,13 +110,15 @@ local function check_notmuch(config)
 
     if a.send_only then
       -- Only somewhere to send from; it has no mail here and wants none.
-    elseif not (a.lieer_dir or (config.options.lieer or {}).dir) then
-      -- No repository means no mail of its own, and without its own
-      -- `notmuch_config` it would answer out of whichever index the default
-      -- names — another account's, which is worse than answering nothing.
+    elseif not config.has_own_mail(name) then
+      -- No mail of its own, and without its own `notmuch_config` it would
+      -- answer out of whichever index the default names — another account's,
+      -- which is worse than answering nothing.
       vim.health.warn(name .. ": nothing is synced here", {
         "Reading under this account draws another account's index.",
-        "Give it a lieer_dir and a notmuch_config, or mark it send_only.",
+        "Give it a lieer_dir and a notmuch_config — or, for a store fetched by",
+        "something else, a notmuch_config with the folders or queries that say",
+        "what is in it. Or mark it send_only.",
       })
     else
       table.insert(checked, { account = name, config = a.notmuch_config or opts.config })

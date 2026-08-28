@@ -861,6 +861,37 @@ function M.setup(opts)
   return M.options
 end
 
+-- Whether this account's mail is on this machine, under its own name.
+--
+-- A lieer repository is one way. The other is a store kept by something outside
+-- this plugin — mbsync writing real folders, say — which shows up here as an
+-- index of its own plus the folders or queries that say what is in it.
+--
+-- Without either, reading under this account draws whichever index the default
+-- names, which is another account's mail: every count and every write would be
+-- about someone else's mailbox.
+function M.has_own_mail(account)
+  if not account then
+    return false
+  end
+  local a = M.options.accounts[account] or {}
+
+  if a.lieer_dir or (M.options.lieer or {}).dir then
+    return true
+  end
+
+  -- Fetched by something else. It needs an index of its own to be worth
+  -- reading, and a way to name what is in it: a store with real folders has no
+  -- tag standing for the inbox.
+  if not a.notmuch_config then
+    return false
+  end
+  if a.query_for then
+    return true
+  end
+  return (a.queries and next(a.queries) ~= nil) or (a.folders and next(a.folders) ~= nil) or false
+end
+
 -- Whether the given account is read-only.
 function M.is_readonly(account)
   if not account then
