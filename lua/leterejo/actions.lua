@@ -319,9 +319,86 @@ local function drops_row()
   end
 end
 
+-- Filing where a mailbox is a directory ------------------------------------
+--
+-- `folders` says which directory a mailbox is. When the one on the screen is
+-- one, an operation that files a message by taking a tag off has no tag to
+-- take: `-inbox` against a store whose inbox is `folder:"INBOX"` removes
+-- nothing, and until this existed it still said "Archived" afterwards.
+--
+-- Nothing is pushed anywhere after a move. A store filled by something else has
+-- no way back up, and a fetcher told to pull only is not supposed to hear about
+-- this at all.
+local function moves_files()
+  return notmuch.folder_of(state.account, state.mailbox) ~= nil
+end
+
+-- Move what is in hand into another of this account's mailboxes.
+local function file_into(envelopes, mailbox, said, after)
+  if #envelopes == 0 or not writable() then
+    return
+  end
+
+  local account, from_mailbox = state.account, state.mailbox
+
+  local to = notmuch.folder_of(account, mailbox)
+  if not to then
+    -- Said rather than done: this account files in directories, and there is
+    -- no directory for what was asked. Tagging instead would look like it
+    -- worked and leave the message exactly where it was.
+    return vim.notify(lang.e("no_folder_for", mailbox), vim.log.levels.WARN)
+  end
+
+  local from = notmuch.folder_of(account, from_mailbox)
+  if from == to then
+    return vim.notify(lang.e("already_there", mailbox), vim.log.levels.WARN)
+  end
+
+  local ids = {}
+  for _, e in ipairs(envelopes) do
+    table.insert(ids, e.id)
+  end
+
+  notmuch.move_to_folder(account, ids, from, to, function(ok, res)
+    if not ok then
+      return err(res)
+    end
+
+    if res == 0 then
+      return vim.notify(lang.e("nothing_to_move", mailbox), vim.log.levels.WARN)
+    end
+
+    notmuch.reindex(account, function(indexed, why)
+      if not indexed then
+        -- The files did move; only the index is behind. Worth saying, because
+        -- the rows will look wrong until the next fetch runs `notmuch new`.
+        vim.notify(lang.e("moved_index_stale", why), vim.log.levels.WARN)
+      end
+
+      for _, e in ipairs(envelopes) do
+        forget_locally(e)
+      end
+      state.clear_selection()
+
+      if still_here(account, from_mailbox) then
+        redraw()
+      end
+
+      vim.notify(said, vim.log.levels.INFO)
+      if after then
+        after()
+      end
+    end)
+  end)
+end
+
 -- Archive: take the inbox label off and leave everything else alone. That is
 -- what archiving is on Gmail, and there is no separate place the message goes.
 function M.archive(envelope, after)
+  if moves_files() then
+    return file_into({ envelope }, "archive", lang.t("archived"), after)
+  end
+
   local change = { remove = { tag("inbox") } }
   apply(envelope, change, {
     said = lang.t("archived"),
@@ -338,6 +415,9 @@ function M.trash(envelope, after)
 
   local change = { add = { tag("trash") }, remove = { tag("inbox") } }
   local function go()
+    if moves_files() then
+      return file_into({ envelope }, "trash", lang.t("trashed"), after)
+    end
     apply(envelope, change, { said = lang.t("trashed"), after = after, locally = drops_row() })
   end
 
@@ -357,6 +437,10 @@ end
 
 -- Report as spam. On Gmail the label is what trains the filter.
 function M.spam(envelope, after)
+  if moves_files() then
+    return file_into({ envelope }, "spam", lang.t("spammed"), after)
+  end
+
   apply(envelope, { add = { tag("spam") }, remove = { tag("inbox") } }, {
     said = lang.t("spammed"),
     after = after,
@@ -623,6 +707,10 @@ function M.many.toggle_flagged(list)
 end
 
 function M.many.archive(list, after)
+  if moves_files() then
+    return file_into(list, "archive", lang.t("archived_many", #list), after)
+  end
+
   local change = { remove = { tag("inbox") } }
   apply_many(list, change, {
     said = lang.t("archived_many", #list),
@@ -638,6 +726,9 @@ function M.many.trash(list, after)
 
   local change = { add = { tag("trash") }, remove = { tag("inbox") } }
   local function go()
+    if moves_files() then
+      return file_into(list, "trash", lang.t("trashed_many", #list), after)
+    end
     apply_many(list, change, {
       said = lang.t("trashed_many", #list),
       after = after,
@@ -660,6 +751,10 @@ function M.many.trash(list, after)
 end
 
 function M.many.spam(list, after)
+  if moves_files() then
+    return file_into(list, "spam", lang.t("spammed_many", #list), after)
+  end
+
   apply_many(list, { add = { tag("spam") }, remove = { tag("inbox") } }, {
     said = lang.t("spammed_many", #list),
     after = after,
