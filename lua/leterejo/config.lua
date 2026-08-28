@@ -557,6 +557,49 @@ M.defaults = {
     -- arrives as raw tags — which is also what himalaya did.
     -- Set to nil to keep the markup as is.
     html_renderer = { "w3m", "-dump", "-T", "text/html", "-cols", "100" },
+
+    -- Take the blank line out from between every line.
+    --
+    -- Outlook writes each line as its own paragraph and w3m puts a blank line
+    -- between blocks, so a message typed without blank lines arrives with more
+    -- blank lines than text — 175 of 301 lines in the message this was written
+    -- for. What the sender did type survives as a line holding a non-breaking
+    -- space, and that is what is kept.
+    --
+    -- Only applied to a rendering that is double-spaced throughout, so mail
+    -- whose blank lines are its only paragraphs is left alone. Set to false to
+    -- see what the renderer produced.
+    collapse_blank_lines = true,
+
+    -- What to put in front of quoted text in a rendering, or false for
+    -- nothing.
+    --
+    -- w3m indents a <blockquote> and marks it no further, and Outlook does not
+    -- use one at all — it appends the message being answered under a From/Sent
+    -- header block, with nothing to say where your own words stopped. Both are
+    -- marked here, which also gives the mail syntax something to colour.
+    --
+    -- Only the rendering. A plain-text part is shown as it arrived.
+    quote_prefix = "> ",
+
+    -- Which half of a message that was sent twice to show.
+    --
+    --   "auto"   the rendering when the markup holds a table, and the text
+    --            the sender's client wrote otherwise (the default)
+    --   "html"   always the rendering
+    --   "plain"  always the text
+    --
+    -- multipart/alternative is one message said twice, as markup and as text.
+    -- notmuch prints the text part and then says the HTML part is not text, so
+    -- filling that in without dropping the other shows the message twice, the
+    -- worse half first.
+    --
+    -- A table is the one thing the text half cannot carry. Outlook writes a
+    -- pasted spreadsheet as one cell per line — every column unfolded into a
+    -- single column — while w3m lays the same table out in columns. Everything
+    -- else usually reads better as the text, which is why that is the default
+    -- for messages with no table in them.
+    alternative = "auto",
   },
 
   -- Key bindings. Set one to false to leave that action unbound.
@@ -633,6 +676,10 @@ M.defaults = {
       spam = "S", -- move to the spam mailbox
       move = "M", -- move to a mailbox you pick
       toggle_wrap = "w", -- wrap long lines, or scroll sideways past a table
+      -- Show the other half of a message that was sent twice: the rendering
+      -- of the markup, or the text the sender's client wrote. See
+      -- notmuch.alternative for which one is shown first.
+      toggle_alternative = "gh",
       help = "?", -- list the keys
       close = "q",
       close_alt = "<esc>",

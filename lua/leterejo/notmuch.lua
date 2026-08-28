@@ -617,6 +617,13 @@ local function pipe_through(cmd, input, on_done)
 end
 
 -- Find the first text/html part of a message.
+-- Which part holds the markup, and which text part says the same thing.
+--
+-- A client that sends multipart/alternative sends one message twice. The two
+-- ids come back together so that whichever is shown, the other can be taken
+-- out: see M.read. The plain id is returned only for a genuine alternative —
+-- a text part that is a part in its own right, as in multipart/mixed, is not
+-- something to drop.
 local function html_part_id(account, id, on_done)
   run_json(account, {
     "show",
@@ -629,21 +636,38 @@ local function html_part_id(account, id, on_done)
       return on_done(nil)
     end
 
-    local found
+    local found, twin
     local function walk(node)
-      if found or type(node) ~= "table" then
+      if type(node) ~= "table" then
         return
       end
-      if node["content-type"] == "text/html" and node.id ~= nil then
+
+      if found == nil and node["content-type"] == "text/html" and node.id ~= nil then
         found = node.id
-        return
       end
+
+      if node["content-type"] == "multipart/alternative" and type(node.content) == "table" then
+        local html, plain
+        for _, child in ipairs(node.content) do
+          if type(child) == "table" then
+            if child["content-type"] == "text/html" then
+              html = child.id
+            elseif child["content-type"] == "text/plain" then
+              plain = child.id
+            end
+          end
+        end
+        if html and plain then
+          found, twin = html, plain
+        end
+      end
+
       for _, child in pairs(node) do
         walk(child)
       end
     end
     walk(tree)
-    on_done(found)
+    on_done(found, twin)
   end)
 end
 
@@ -699,6 +723,34 @@ function M.render_width(renderer)
   return out
 end
 
+-- Remove one part, and whatever it contains, from marked `show` output.
+--
+-- The markers are the only thing that says where one part ends: the text
+-- itself has no boundary, and the parts of an alternative are the same words.
+-- So this runs before strip_markers, on output that still has them.
+local function without_part(text, part)
+  local out, depth = {}, nil
+
+  for _, line in ipairs(vim.split(text or "", "\n", { plain = true })) do
+    if depth == nil and line:match("^\012part{ ID: " .. tostring(part) .. ",") then
+      depth = 1
+    elseif depth ~= nil then
+      if line:match("^\012part{") then
+        depth = depth + 1
+      elseif line:match("^\012part}") then
+        depth = depth - 1
+        if depth == 0 then
+          depth = nil
+        end
+      end
+    else
+      table.insert(out, line)
+    end
+  end
+
+  return table.concat(out, "\n")
+end
+
 local function strip_markers(text)
   local out = {}
 
@@ -723,19 +775,216 @@ function M.raw(account, id, on_done)
   run(account, { "show", "--format=raw", "--entire-thread=false", id_query(id) }, on_done)
 end
 
-function M.read(account, id, on_done)
+-- Reading a rendering ---------------------------------------------------------
+--
+-- Two things w3m does that make mail harder to read than it was written, both
+-- measured over the mail here rather than assumed.
+
+-- Marks around a quotation, put in before the renderer runs and taken out
+-- after. w3m indents a <blockquote> and marks it no further, and indentation
+-- alone does not read as someone else's words. Written as characters no mail
+-- here contains, so a message that happens to hold one is not misread.
+local QUOTE_OPEN, QUOTE_CLOSE = "\239\191\185q\239\191\185", "\239\191\185/q\239\191\185"
+
+local function mark_quotations(html)
+  html = html:gsub("<[bB][lL][oO][cC][kK][qQ][uU][oO][tT][eE][^>]*>", "%0" .. QUOTE_OPEN)
+  return (html:gsub("</[bB][lL][oO][cC][kK][qQ][uU][oO][tT][eE]%s*>", QUOTE_CLOSE .. "%0"))
+end
+
+-- Undo the blank line between every line.
+--
+-- Outlook writes each line of a message as its own paragraph, and w3m puts a
+-- blank line between one block and the next. A message the sender typed with
+-- no blank lines in it therefore arrives with more blank lines than text:
+-- 175 of 301 lines in the one this was written for.
+--
+-- What the sender did type survives as a line holding a non-breaking space,
+-- which is how the two are told apart — the empty lines are the renderer's and
+-- go, the ones with something on them are the sender's and become the blank.
+--
+-- Only when the rendering is double-spaced throughout: measured as the share
+-- of text lines standing alone between two blanks. Over 148 messages here that
+-- share separates mail people write (85-100%) from mail that is generated
+-- (0-20%), where the blank lines are the only paragraphs there are.
+local function single_spaced(text)
+  if ((config.options.notmuch or {}).collapse_blank_lines) == false then
+    return text
+  end
+
+  local lines = vim.split(text or "", "\n", { plain = true })
+
+  -- A line holding nothing but a quotation mark is not the sender's line: it
+  -- was put there to be taken out again, and counting it as text would make
+  -- every quoted message look double-spaced.
+  local function is_text(line)
+    line = (line or ""):gsub(QUOTE_OPEN, ""):gsub(QUOTE_CLOSE, "")
+    return vim.trim(line) ~= ""
+  end
+
+  local written, alone = 0, 0
+  for i, line in ipairs(lines) do
+    if is_text(line) then
+      written = written + 1
+      if not is_text(lines[i - 1]) and not is_text(lines[i + 1]) then
+        alone = alone + 1
+      end
+    end
+  end
+
+  if written < 6 or alone / written < 0.6 then
+    return text
+  end
+
+  local out = {}
+  for _, line in ipairs(lines) do
+    if line == "" then -- the renderer's
+      -- dropped
+    elseif line:match("^%s+$") then -- the sender's
+      if #out > 0 and out[#out] ~= "" then
+        table.insert(out, "")
+      end
+    else
+      table.insert(out, line)
+    end
+  end
+
+  return table.concat(out, "\n")
+end
+
+-- Show quoted text as quoted.
+--
+-- Two kinds, because mail comes in two kinds. A <blockquote> is marked before
+-- the renderer runs, above. Outlook does not use one: it appends the message
+-- being answered under a header block and leaves it at that, so the block is
+-- the boundary and everything below it is someone else's words.
+--
+-- Of 373 messages here that carry HTML, 18 quote with <blockquote> and 79 the
+-- Outlook way.
+local QUOTE_HEAD = { "From", "Sent", "差出人", "送信者", "送信日時" }
+
+local function quotation_starts_at(lines)
+  local function heads(line, which)
+    for _, name in ipairs(which) do
+      if line:match("^%s*" .. name .. "%s*:") then
+        return true
+      end
+    end
+    return false
+  end
+
+  for i, line in ipairs(lines) do
+    if heads(line, { "From", "差出人", "送信者" }) then
+      -- A line that only looks like a header is not one. The block has a
+      -- second line naming when it was sent, within a line or two of the
+      -- first, and prose does not.
+      for j = i + 1, math.min(i + 5, #lines) do
+        if heads(lines[j], { "Sent", "送信日時", "日時" }) then
+          return i
+        end
+      end
+    end
+  end
+  return nil
+end
+
+local function with_quote_marks(text)
+  local prefix = (config.options.notmuch or {}).quote_prefix
+  if prefix == nil then
+    prefix = "> "
+  end
+
+  local lines = vim.split(text or "", "\n", { plain = true })
+  local out, depth = {}, 0
+
+  -- The marks come out either way; what they are for is optional, they are not.
+  local strip_only = type(prefix) ~= "string" or prefix == ""
+
+  for _, line in ipairs(lines) do
+    local opened, closed = 0, 0
+    line, opened = line:gsub(QUOTE_OPEN, "")
+    line, closed = line:gsub(QUOTE_CLOSE, "")
+
+    -- A mark of its own is not a line of the message. w3m gives it one because
+    -- it sits between two blocks, and leaving it in would leave a blank line
+    -- at each end of every quotation.
+    local was_a_mark = (opened + closed) > 0 and vim.trim(line) == ""
+
+    depth = depth + opened
+    if not strip_only and depth > 0 and not was_a_mark then
+      -- w3m indents a quotation by four columns a level. That was its way of
+      -- saying what the marks now say, so it goes.
+      local room = 4 * depth
+      line = line:gsub("^( +)", function(spaces)
+        return spaces:sub(math.min(#spaces, room) + 1)
+      end)
+      line = (prefix:rep(depth) .. line):gsub("%s+$", "")
+    end
+    depth = math.max(0, depth - closed)
+
+    if not was_a_mark then
+      table.insert(out, line)
+    end
+  end
+
+  if strip_only then
+    return table.concat(out, "\n")
+  end
+
+  -- The Outlook kind, which has no marks to find: from the header block down.
+  local from = quotation_starts_at(out)
+  if from then
+    for i = from, #out do
+      out[i] = vim.trim(prefix) .. (out[i] ~= "" and " " .. out[i] or "")
+    end
+  end
+
+  return table.concat(out, "\n")
+end
+
+-- Whether a rendering carries a table the text half does not.
+--
+-- A row is a line holding three or more fields separated by runs of two or
+-- more spaces: what w3m makes of a table, and what prose does not look like.
+-- The text half is measured the same way, because a sender who lined a table
+-- up by hand has one on both sides and there is nothing to gain by switching.
+local function carries_a_table(rendered, text)
+  local function rows(s)
+    local n = 0
+    for _, line in ipairs(vim.split(s or "", "\n", { plain = true })) do
+      if line:find("%S%s%s+%S.-%s%s+%S") then
+        n = n + 1
+      end
+    end
+    return n
+  end
+
+  local found = rows(rendered)
+  return found >= 2 and found > rows(text)
+end
+
+-- Read a message body.
+--
+-- `opts.alternative` overrides the setting of the same name for this read,
+-- which is how the key that switches halves asks for the other one. The third
+-- value handed to `on_done` says which half was shown — "html", "plain", or
+-- nil when the message was not sent twice and there is nothing to switch to.
+function M.read(account, id, on_done, opts)
+  opts = opts or {}
+
+  -- The markers are kept until the last moment: which alternative is shown is
+  -- decided by taking the other one out, and only the markers say where it is.
   local function show(extra, cb)
     local args = { "show", "--format=text", "--entire-thread=false" }
     vim.list_extend(args, extra)
     table.insert(args, id_query(id))
-    run(account, args, function(ok, out)
-      cb(ok, ok and strip_markers(out) or out)
-    end)
+    run(account, args, cb)
   end
 
   -- Fall back to the raw markup, which is what came before.
   local function raw(cb)
-    show({ "--include-html" }, cb)
+    show({ "--include-html" }, function(ok, out)
+      cb(ok, ok and strip_markers(out) or out)
+    end)
   end
 
   show({}, function(ok, out)
@@ -745,7 +994,7 @@ function M.read(account, id, on_done)
 
     local marker = "Non-text part: text/html"
     if not out:find(marker, 1, true) then
-      return on_done(true, out)
+      return on_done(true, strip_markers(out))
     end
 
     local renderer = (config.options.notmuch or {}).html_renderer
@@ -754,7 +1003,7 @@ function M.read(account, id, on_done)
     end
     renderer = M.render_width(renderer)
 
-    html_part_id(account, id, function(part)
+    html_part_id(account, id, function(part, twin)
       if not part then
         return raw(on_done)
       end
@@ -770,12 +1019,49 @@ function M.read(account, id, on_done)
           return raw(on_done)
         end
 
-        pipe_through(renderer, html, function(ok3, text)
+        -- One message, said twice. Which half to keep.
+        --
+        -- The text half is what the sender's client wrote and usually reads
+        -- better — except for a table, which it cannot express: Outlook writes
+        -- a pasted spreadsheet as one cell per line, every column unfolded into
+        -- a single column. That is the one thing the rendering carries and the
+        -- text does not, so it decides.
+        local choice = opts.alternative or (config.options.notmuch or {}).alternative or "auto"
+
+        if twin and choice == "plain" then
+          return on_done(true, strip_markers(without_part(out, part)), "plain")
+        end
+
+        pipe_through(renderer, mark_quotations(html), function(ok3, text)
           if not ok3 or vim.trim(text) == "" then
             return raw(on_done)
           end
+
+          -- What the renderer made of it, made readable: the blank line it put
+          -- between every line taken back out, and quoted text marked as such.
+          text = with_quote_marks(single_spaced(text))
+
+          -- "auto" asks the rendering itself rather than the markup. A table
+          -- is what the text half cannot carry, and a table is what w3m lays
+          -- out in columns — so a rendering with rows in it, where the text has
+          -- none, is a rendering that says something the text does not.
+          -- Measured over 112 messages here: the markup is no guide, since a
+          -- newsletter is built out of tables too and carries the same Word
+          -- markers as a colleague's spreadsheet.
+          if twin and choice ~= "html" and not carries_a_table(text, out) then
+            return on_done(true, strip_markers(without_part(out, part)), "plain")
+          end
+
+          if twin then
+            out = without_part(out, twin)
+          end
+
           -- Put the rendering where notmuch said there was nothing to read.
-          on_done(true, (out:gsub(vim.pesc(marker), (text:gsub("%%", "%%%%")), 1)))
+          on_done(
+            true,
+            strip_markers((out:gsub(vim.pesc(marker), (text:gsub("%%", "%%%%")), 1))),
+            twin and "html" or nil
+          )
         end)
       end)
     end)

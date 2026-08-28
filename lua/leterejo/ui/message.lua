@@ -320,6 +320,33 @@ local function setup_keymaps(buf)
         vim.notify(m.wrap and lang.t("wrap_on") or lang.t("wrap_off"), vim.log.levels.INFO)
       end,
     },
+    toggle_alternative = {
+      desc = lang.t("desc_toggle_alternative"),
+      handler = function()
+        local m = state.current_message
+        if not m then
+          return
+        end
+
+        -- Nothing was sent twice, so there is no other half to show. Said
+        -- rather than silently doing nothing, which reads as a broken key.
+        if not m.alternative then
+          return vim.notify(lang.t("alternative_only_one"), vim.log.levels.INFO)
+        end
+
+        local e = current_envelope()
+        if not e then
+          return vim.notify(lang.e("source_not_found"), vim.log.levels.WARN)
+        end
+
+        local other = m.alternative == "html" and "plain" or "html"
+        M.open(e, { alternative = other })
+        vim.notify(
+          other == "html" and lang.t("alternative_html") or lang.t("alternative_plain"),
+          vim.log.levels.INFO
+        )
+      end,
+    },
     help = {
       desc = lang.t("desc_help"),
       handler = function()
@@ -490,7 +517,7 @@ function M.open(envelope, opts)
 
   -- Ask for the body, the attachment list and the tags together; the body
   -- sets the wait.
-  local body, attachments, tags
+  local body, attachments, tags, alternative
   local body_done, struct_done, tags_done = false, false, false
 
   local function finish()
@@ -514,6 +541,9 @@ function M.open(envelope, opts)
       body = body,
       attachments = attachments,
       tags = tags,
+      -- Which half of a message sent twice is on screen, so the key that
+      -- switches knows what to switch to. nil when there is only one.
+      alternative = alternative,
       folded = config.options.fold_headers,
       -- `quiet` is what the preview asks with, and the preview is the one view
       -- that is redrawn every time the cursor moves.
@@ -522,15 +552,15 @@ function M.open(envelope, opts)
     M.render(state.current_message, opts)
   end
 
-  notmuch.read(account, id, function(ok, out)
+  notmuch.read(account, id, function(ok, out, half)
     if ok then
-      body = out
+      body, alternative = out, half
     elseif not opts.quiet then
       vim.notify(lang.t("prefix") .. out, vim.log.levels.ERROR)
     end
     body_done = true
     finish()
-  end)
+  end, { alternative = opts.alternative })
 
   notmuch.tags_of(account, id, function(ok, found)
     tags = ok and found or nil
