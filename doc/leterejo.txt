@@ -213,6 +213,8 @@ In the message body: r R f A, s F e d S M as above, plus >
     h       show or fold the headers
     H  gH   the whole header block, the whole message
     w       wrap long lines, or not
+    gh      the other half of a message sent twice: the rendered markup, or
+            the plain text the sender's client wrote
     q <Esc> back to the list
 <
                                                              *leterejo-source*
@@ -390,6 +392,24 @@ filters         The filters `g/` offers.
 notmuch.html_renderer
                 How mail with no plain-text part is made readable. Over half
                 of the mail measured here was of that kind.
+notmuch.collapse_blank_lines
+                Take out the blank line w3m puts between every line of a
+                message whose sender's client wrote one paragraph per line —
+                Outlook does. Only when the whole rendering is double-spaced;
+                what the sender typed survives as a non-breaking space and is
+                kept. Default true.
+notmuch.quote_prefix
+                What to put in front of quoted text in a rendering. Default
+                "> ", false for nothing. Covers both a <blockquote>, which
+                w3m only indents, and the From/Sent header block Outlook
+                appends instead. The buffer is filetype=mail, so the marks are
+                coloured as quotes.
+notmuch.alternative
+                Which half of a message sent twice — as markup and as text —
+                to show. "auto" (default) shows the rendering when it carries
+                a table the text does not, since a pasted spreadsheet reaches
+                the text half as one cell per line; "html" and "plain" always
+                pick one. `gh` shows the other half either way.
 notmuch.repair_headers
                 Read the subject and sender from the message file rather than
                 trust notmuch's decoding, which stops at the first encoded

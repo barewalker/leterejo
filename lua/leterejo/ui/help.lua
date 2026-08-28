@@ -53,6 +53,7 @@ local ORDER = {
     { "raw_headers", "desc_raw_headers" },
     { "raw_source", "desc_raw_source" },
     { "toggle_wrap", "desc_toggle_wrap" },
+    { "toggle_alternative", "desc_toggle_alternative" },
     { "toggle_seen", "desc_toggle_seen" },
     { "toggle_flagged", "desc_toggle_flagged" },
     { "archive", "desc_archive" },

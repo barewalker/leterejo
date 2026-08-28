@@ -203,6 +203,7 @@ lieer は取得したメールを notmuch に登録するので、索引作成�
     h       ヘッダの表示・折りたたみ
     H  gH   ヘッダ全体、メール全体
     w       長い行の折り返し
+    gh      2 通ぶん送られたメールのもう一方 (HTML の描画 / 素のテキスト)
     q <Esc> 一覧に戻る
 <
                                                              *leterejo-source*
@@ -369,6 +370,21 @@ filters         `g/` が出す絞り込み。
 notmuch.html_renderer
                 本文が HTML しかないメールの整形方法。ここで測った限り、半分以
                 上がその種類だった。
+notmuch.collapse_blank_lines
+                1 行ごとに段落を書くクライアント (Outlook) のメールで、w3m が
+                行間に入れる空行を取り除く。描画全体が 1 行おきになっている
+                ときだけ働く。送信者が入れた空行は non-breaking space の行と
+                して残るので、そちらは保つ。既定 true。
+notmuch.quote_prefix
+                描画の中の引用に付ける印。既定 "> "、false で付けない。w3m が
+                字下げしかしない <blockquote> と、Outlook が代わりに付ける
+                From:/Sent: の見出し以下の両方が対象。バッファは
+                filetype=mail なので、付いた印は引用として色が付く。
+notmuch.alternative
+                markup と text の 2 通ぶんで送られたメールのどちらを表示する
+                か。"auto" (既定) は、描画の側にしか表がないときだけ描画を出
+                す。貼り付けた表は素のテキスト側では 1 セル 1 行に潰れるため。
+                "html" / "plain" は常に一方。どちらでも `gh` で切り替えられる。
 notmuch.repair_headers
                 件名と差出人をメールのファイルから読み直す。notmuch の復号は最
                 初の encoded word で止まるため。既定 true。
