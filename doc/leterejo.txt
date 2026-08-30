@@ -247,8 +247,11 @@ leave it unbound.
 ==============================================================================
 6. TAGS                                                        *leterejo-tags*
 
-A tag is a Gmail label, and a mailbox is a tag. There is nothing else: no
-folders, and no state that is not a tag.
+State is a tag. A mailbox is a tag too on a Gmail account, where a mailbox is
+a label — but that is one of two models, and the account says which it uses.
+
+A TAG ACCOUNT (lieer, Gmail). Every mailbox is a tag, and nothing moves on
+disk:
 
     read            -unread
     archive         -inbox
@@ -256,6 +259,20 @@ folders, and no state that is not a tag.
     spam            +spam -inbox
     flag            +flagged
     move            +<chosen> -<the one being looked at>
+
+A DIRECTORY ACCOUNT (`folders` is set, and something else fills the store —
+mbsync, say). The mailboxes are real directories and no tag stands for the
+inbox, so leaving one means moving the file:
+
+    read            -unread     still a tag
+    flag            +flagged    still a tag
+    archive         the file moves into the `archive` directory
+    trash, spam     the same, into `trash` / `spam`
+    move            the same, into the directory you pick
+
+Dropping a tag there would change nothing while still reporting success, so
+an account that names no directory for where you asked to put a message says
+so and does nothing.
 
 A message carries as many tags as apply, so `t` puts them on and takes them
 off, showing what the message already has. With fzf-lua several can be marked
