@@ -51,6 +51,37 @@ local OBFUSCATED = "is:obfuscated"
 
 local SCANNED = { [SUSPICIOUS] = true, [OBFUSCATED] = true }
 
+-- The tag an account already holds for one of the two markers above.
+--
+-- Both look for characters Xapian never indexed, so by default they are
+-- answered by reading the mailbox back and examining what would be drawn.
+-- That is honest, and it is the one filter here that costs real time: up to
+-- `suspicious_scan_limit` messages read to answer a single question.
+--
+-- Where something outside this plugin already writes the same finding into the
+-- index — a classifier running over the fetched mail, say — the account can
+-- name the tags and both become ordinary queries. **Nothing here writes them.**
+-- This only reads what is already there, so naming a tag no writer maintains
+-- finds nothing rather than misreporting; and an account with no classifier
+-- (lieer fetches Gmail, and no such tool runs on it) simply leaves this unset
+-- and keeps the scan.
+local MARKER_KEY = { [SUSPICIOUS] = "suspicious", [OBFUSCATED] = "obfuscated" }
+
+local function marker_tag(account, query)
+  local key = MARKER_KEY[query]
+  if not key then
+    return nil
+  end
+
+  local a = (config.options.accounts or {})[account] or {}
+  local name = (a.marker_tags or {})[key]
+  if not name or name == "" then
+    return nil
+  end
+
+  return string.format('tag:"%s"', name)
+end
+
 local ALIASES = {
   ["is:attachment"] = "tag:attachment",
   -- notmuch indexes the MIME type of every part, so this is a real query
@@ -91,18 +122,25 @@ end
 -- A query the index answers can: it is addressed by offset and resumes exactly
 -- where it left off. A scan cannot — it already read as far as it was going to
 -- and looked at every row, so there is no offset to continue from.
-function M.resumable(query)
+function M.resumable(account, query)
   local q = query and (ALIASES[tostring(query):lower()] or tostring(query):lower())
-  return not (q and SCANNED[q])
+  if not (q and SCANNED[q]) then
+    return true
+  end
+  -- Unless the account holds the finding as a tag, in which case the index
+  -- answers it after all and the result pages like any other.
+  return marker_tag(account, q) ~= nil
 end
 
 -- How many messages a query reaches, or nil where that cannot be known cheaply.
 function M.count(account, mailbox, query, on_done)
-  if not M.resumable(query) then
+  if not M.resumable(account, query) then
     return on_done(true, nil)
   end
   local notmuch = require("leterejo.notmuch")
-  return notmuch.count(account, scoped_query(account, mailbox, ALIASES[query:lower()] or query), false, on_done)
+  local q = ALIASES[query:lower()] or query
+  q = marker_tag(account, q:lower()) or q
+  return notmuch.count(account, scoped_query(account, mailbox, q), false, on_done)
 end
 
 -- Run a query.
@@ -125,6 +163,10 @@ function M.run(account, mailbox, query, offset, limit, sort, on_done)
   query = ALIASES[query:lower()] or query
 
   local notmuch = require("leterejo.notmuch")
+
+  -- Where the account holds the finding as a tag, this is an ordinary query
+  -- and the scan below is never reached.
+  query = marker_tag(account, query:lower()) or query
 
   -- The filters the index cannot answer. Read the mailbox and look.
   if SCANNED[query:lower()] then
