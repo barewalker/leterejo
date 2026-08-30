@@ -214,10 +214,15 @@ M.defaults = {
 
   -- The tags standing for the states this plugin knows by name.
   --
-  -- A mailbox is a tag and a change of state is a change of tag, because on
-  -- Gmail a mailbox is a label. Marking read is `-unread`, archiving is
-  -- `-inbox`, and deleting is `+trash` — there is no delete, and undoing one is
-  -- taking the tag off again.
+  -- A change of state is a change of tag. Marking read is `-unread`, deleting
+  -- is `+trash` — there is no delete — and undoing one is taking the tag off
+  -- again.
+  --
+  -- Whether a *mailbox* is a tag depends on the account. On Gmail it is,
+  -- because there a mailbox is a label, so archiving is `-inbox` and nothing
+  -- moves on disk. An account whose store something else fills has real
+  -- directories, and there archiving moves the file — see `folders` above and
+  -- `M.query_for` in notmuch.lua. The names below are states either way.
   --
   -- These are lieer's translation of Gmail's own labels (UNREAD, STARRED,
   -- INBOX, TRASH, SPAM), so they are set here for the case where a translation
