@@ -138,6 +138,15 @@ M.defaults = {
   --                directory, e.g. { inbox = "tag:inbox" }
   --   query_for  : function(mailbox) -> notmuch query, when the two tables
   --                above are not enough
+  --   marker_tags : the tags something else already wrote for the two computed
+  --                markers, e.g.
+  --                  { suspicious = "bidi-control", obfuscated = "zero-width" }
+  --                `is:suspicious` and `is:obfuscated` look for characters
+  --                Xapian never indexed, so without this they are answered by
+  --                reading the mailbox back — the one filter here that costs
+  --                real time. Naming them turns both into ordinary queries.
+  --                This plugin only reads these; whatever fetches the mail is
+  --                what writes them
   --
   -- Empty by default. Anything named here is merged into what setup() is
   -- given, so a shipped example would appear in every user's account list.

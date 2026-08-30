@@ -372,6 +372,11 @@ Per-account options, under `accounts.<name>`:
                         archiving moves the file into the `archive` directory
     sync_lock           the lock file the fetcher holds while it writes. Taken
                         before moving files
+    marker_tags         tags something else already wrote for the two computed
+                        markers, e.g. { suspicious = "bidi-control",
+                        obfuscated = "zero-width" }. Turns `is:suspicious` and
+                        `is:obfuscated` from a scan into an index query. Only
+                        read here — the fetcher is what writes them
 
 ==============================================================================
 10. OPTIONS                                                 *leterejo-options*

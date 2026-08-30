@@ -353,6 +353,12 @@ lieer 以外が取ってくるアカウント (会社の IMAP を mbsync で落�
     folders             メールボックス名から Maildir のディレクトリへの対応。
                         実ディレクトリの置き場では仕分けの意味も持つ。保管は
                         `archive` のディレクトリへファイルを移すことになる
+    marker_tags         走査で求めている 2 つの印を、別のものが既にタグとして
+                        書いている場合にその名前。例 { suspicious =
+                        "bidi-control", obfuscated = "zero-width" }。
+                        is:suspicious と is:obfuscated が走査ではなく索引への
+                        問い合わせになる。ここでは読むだけで、書くのは取得する
+                        側である
     sync_lock           取得する側が書き込み中に持つロックファイル。ファイルを
                         移す前にこれを取る
 

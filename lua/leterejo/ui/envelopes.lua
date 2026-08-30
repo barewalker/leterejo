@@ -112,7 +112,7 @@ local function growable()
     return false
   end
   if state.query then
-    return require("leterejo.search").resumable(state.query.text)
+    return require("leterejo.search").resumable(state.account, state.query.text)
   end
   return true
 end
