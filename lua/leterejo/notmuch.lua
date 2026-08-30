@@ -1819,10 +1819,15 @@ end
 
 -- Turn a mailbox name into a query.
 --
--- A mailbox is a tag, because on Gmail a mailbox is a label. Kept deliberately
--- thin so the exceptions stay in one place: a store synced by mbsync has real
--- folders, and the Takeout archive is split by year and is not one directory at
--- all, so accounts can name a folder or spell out a query instead.
+-- Two models, not one rule with exceptions. On a Gmail account a mailbox is a
+-- tag, because there a mailbox is a label. On an account whose store something
+-- else fills — mbsync writing real directories — a mailbox is a directory, and
+-- that is the primary account here now rather than the odd case. A Takeout
+-- archive is neither: split by year, it is not one directory at all, so an
+-- account can also spell out a query.
+--
+-- Kept deliberately thin so the choice stays in one place: a query, then a
+-- folder, then the tag.
 function M.query_for(account, mailbox)
   local a = (config.options.accounts or {})[account] or {}
   if a.query_for then
@@ -1861,8 +1866,9 @@ end
 
 -- Moving mail between real directories ------------------------------------
 --
--- A mailbox is a tag here because on Gmail a mailbox is a label: archiving is
--- `-inbox` and nothing moves on disk. A store that something else fills has
+-- On a Gmail account a mailbox is a tag, because there a mailbox is a label:
+-- archiving is `-inbox` and nothing moves on disk. A store that something else
+-- fills has
 -- real directories instead, and no tag stands for its inbox — so taking one off
 -- would change nothing at all while still reporting success. There the message
 -- has to be moved.

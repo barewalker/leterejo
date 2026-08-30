@@ -505,6 +505,16 @@ function M.move_to(envelope, dest, after)
     return vim.notify(lang.e("already_there", dest), vim.log.levels.WARN)
   end
 
+  -- A directory account files by moving the file, the same as archive, trash
+  -- and spam above. Tagging instead would report success and leave the message
+  -- exactly where it was — and here that matters twice over, because the
+  -- picker offers what the index holds, which on such an account can be tags
+  -- that describe a message rather than name a place. `file_into` declines
+  -- when the account names no directory for what was asked.
+  if moves_files() then
+    return file_into({ envelope }, dest, lang.t("moved", dest), after)
+  end
+
   local change = { add = { dest } }
   local here = notmuch.tag_for(state.account, state.mailbox)
   if here then
@@ -806,6 +816,10 @@ function M.many.move_to(list, dest, after)
 
   if dest == state.mailbox then
     return vim.notify(lang.e("already_there", dest), vim.log.levels.WARN)
+  end
+
+  if moves_files() then
+    return file_into(list, dest, lang.t("moved_many", #list, dest), after)
   end
 
   local change = { add = { dest } }
