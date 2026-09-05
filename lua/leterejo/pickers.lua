@@ -71,7 +71,24 @@ function M.pick_mailbox_name(prompt, on_choice, opts)
 
   local notmuch = require("leterejo.notmuch")
 
+  -- `tags_only` asks for the places mail can be put, as against the places it
+  -- can be looked at. On an account that files in directories those are its
+  -- folders, and the tags are the wrong list to offer: `new.tags` there can be
+  -- empty, so what the index holds describes a message (`attachment`,
+  -- `spf-fail`, `zero-width`) and never names a place. Every one of them was
+  -- refused by `file_into`, which left `inbox` unreachable — and `M` is the
+  -- only way a message comes back out of Junk. (2026-09-06)
   if opts.tags_only then
+    local a = (config.options.accounts or {})[state.account] or {}
+    if a.folders and next(a.folders) ~= nil then
+      local names = {}
+      for name in pairs(a.folders) do
+        table.insert(names, name)
+      end
+      table.sort(names)
+      return select(names, prompt, on_choice)
+    end
+
     return notmuch.tags(state.account, function(ok, tags)
       if not ok then
         return vim.notify(lang.t("prefix") .. tags, vim.log.levels.ERROR)
@@ -80,16 +97,19 @@ function M.pick_mailbox_name(prompt, on_choice, opts)
     end)
   end
 
-  notmuch.mailboxes(state.account, function(ok, names, is_view)
+  notmuch.mailboxes(state.account, function(ok, names, kind)
     if not ok then
       return vim.notify(lang.t("prefix") .. names, vim.log.levels.ERROR)
     end
 
-    -- Say which are views. They behave differently — nothing can be moved into
-    -- one — and a list that looks uniform invites treating them alike.
+    -- Say which are not tags. The three behave differently — nothing can be
+    -- moved into a view, while a folder is the one thing that can — and a list
+    -- that looks uniform invites treating them alike.
+    local said = { query = lang.t("is_a_view"), folder = lang.t("is_a_folder") }
     local items, name_of = {}, {}
     for _, name in ipairs(names) do
-      local line = is_view[name] and (name .. "  " .. lang.t("is_a_view")) or name
+      local note = said[kind[name]]
+      local line = note and (name .. "  " .. note) or name
       table.insert(items, line)
       name_of[line] = name
     end

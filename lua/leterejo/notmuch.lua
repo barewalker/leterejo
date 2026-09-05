@@ -2105,7 +2105,12 @@ end
 -- not put on a message. Offering one where a tag was meant created a tag called
 -- "Archive" here, which is exactly the confusion this keeps out.
 --
---   on_done(ok, names, is_view)
+-- A folder is neither. It is a real place, so mail can be filed into it as well
+-- as looked at, and calling it a view told the reader the opposite. So the
+-- second return says which of the three each name is rather than only whether
+-- it is a tag.
+--
+--   on_done(ok, names, kind)   kind[name] = "query" | "folder" | nil (a tag)
 function M.mailboxes(account, on_done)
   all_tags(account, function(ok, tags)
     if not ok then
@@ -2113,12 +2118,12 @@ function M.mailboxes(account, on_done)
     end
 
     local a = (config.options.accounts or {})[account] or {}
-    local is_view, names, seen = {}, {}, {}
+    local kind, names, seen = {}, {}, {}
 
-    local function add(name, view)
+    local function add(name, what)
       if not seen[name] then
         seen[name] = true
-        is_view[name] = view or nil
+        kind[name] = what
         table.insert(names, name)
       end
     end
@@ -2127,17 +2132,17 @@ function M.mailboxes(account, on_done)
     -- named after ("inbox", scoped to what one sync tool holds) is the one
     -- that should answer to the name.
     for name in pairs(a.queries or {}) do
-      add(name, true)
+      add(name, "query")
     end
     for name in pairs(a.folders or {}) do
-      add(name, true)
+      add(name, "folder")
     end
     for _, t in ipairs(tags) do
-      add(t, false)
+      add(t, nil)
     end
 
     table.sort(names)
-    on_done(true, names, is_view)
+    on_done(true, names, kind)
   end)
 end
 
