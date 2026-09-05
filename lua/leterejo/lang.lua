@@ -177,6 +177,7 @@ strings.en = {
 
   -- Filing where a mailbox is a directory rather than a tag.
   no_folder_for = "This account files mail in directories and has none for `%s`",
+  tag_is_a_folder = "`%s` is a directory in this account's store, not a tag. Move the message there instead",
   nothing_to_move = "Nothing moved: no file of this message is in the mailbox on screen",
   moved_index_stale = "Moved, but the index could not be updated (%s). The next fetch will bring it back in step",
 
@@ -467,6 +468,7 @@ strings.ja = {
 
   -- メールボックスがタグではなくディレクトリのとき。
   no_folder_for = "このアカウントはディレクトリで仕分けます。`%s` にあたるものがありません",
+  tag_is_a_folder = "`%s` はこのアカウントの置き場のディレクトリで、タグではありません。移す操作で仕分けてください",
   nothing_to_move = "動きませんでした。今見ているメールボックスにこのメールのファイルがありません",
   moved_index_stale = "移しましたが索引を更新できませんでした (%s)。次の取り込みで揃います",
 

@@ -333,6 +333,26 @@ local function moves_files()
   return notmuch.folder_of(state.account, state.mailbox) ~= nil
 end
 
+-- The first of these names one of this account's directories, if any does.
+--
+-- On a directory account `+inbox` puts an index-only tag on the message and
+-- moves nothing: the inbox is `folder:INBOX`, so the row stays where it was
+-- while the change reports success. `-inbox` is worse — there is no such tag
+-- to take off, so it reports success having done nothing at all. That is the
+-- silent success `move_to` was fixed for, reached by the other key.
+--
+-- Filing on such an account is a move, and `M.move` is the only thing that
+-- does it. So this says so rather than tagging.
+local function names_a_folder(names)
+  local folders = ((config.options.accounts or {})[state.account] or {}).folders or {}
+  for _, name in ipairs(names or {}) do
+    if folders[name] then
+      return name
+    end
+  end
+  return nil
+end
+
 -- Move what is in hand into another of this account's mailboxes.
 local function file_into(envelopes, mailbox, said, after)
   if #envelopes == 0 or not writable() then
@@ -478,6 +498,12 @@ function M.change_tags(envelope, add, remove)
 
   if #change.add == 0 and #change.remove == 0 then
     return
+  end
+
+
+  local place = names_a_folder(change.add) or names_a_folder(change.remove)
+  if place then
+    return vim.notify(lang.e("tag_is_a_folder", place), vim.log.levels.WARN)
   end
 
   local said = {}
@@ -793,6 +819,12 @@ function M.many.change_tags(list, add, remove)
 
   if #change.add == 0 and #change.remove == 0 then
     return
+  end
+
+
+  local place = names_a_folder(change.add) or names_a_folder(change.remove)
+  if place then
+    return vim.notify(lang.e("tag_is_a_folder", place), vim.log.levels.WARN)
   end
 
   local said = {}
