@@ -163,7 +163,7 @@ the variable writes messages that cannot be searched properly.
 In the list (`filetype=leterejo-envelopes`):
 
     <CR>    open the message            t     put tags on, take them off
-    r  R    reply, reply the other way  M     move to another tag
+    r  R    reply, reply the other way  M     move somewhere else
     f  c    forward, write a new one    m     switch tag
     s  F    read/unread, flag           a     switch account
     e       archive (-inbox)            /     filter
@@ -269,6 +269,11 @@ inbox, so leaving one means moving the file:
     archive         the file moves into the `archive` directory
     trash, spam     the same, into `trash` / `spam`
     move            the same, into the directory you pick
+
+`M` offers this account's `folders` rather than its tags. The tags are the
+wrong list on such a store: with `new.tags` empty they describe a message
+(`attachment`, `signed`) and name no place, and offering them left `inbox`
+unreachable — which is how a message comes back out of `spam`.
 
 Dropping a tag there would change nothing while still reporting success, so
 an account that names no directory for where you asked to put a message says
