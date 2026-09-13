@@ -1,6 +1,6 @@
 # leterejo.nvim
 
-手元の [notmuch][] 索引を読み、状態の変更はタグで行い、送信は [himalaya][] に任せる Neovim のメールクライアント。メールの取得は [lieer][] が Gmail の API 越しに Maildir を同期して行う。
+手元の [notmuch][] 索引を読み、状態の変更はタグで行い、送信は [himalaya][] に任せる Neovim のメールクライアント。メールの取得は別の道具の仕事で、Gmail なら [lieer][] が API 越しに、それ以外は [mbsync][] (Maildir を埋めるものなら何でもよい) が IMAP 越しに行う。
 
 **一覧 50 件で 37 ミリ秒、本文は 10〜20 ミリ秒。** 読み取りの経路が一度も機外に出ないため。
 
@@ -10,15 +10,15 @@ English: [README.md](README.md)
 
 ## 誰のための道具か
 
-**Gmail を使っていて、同期の道具を自分で回す気がある人。** IMAP の経路は無い。メールはこの機械にあるか、無いなら読めない。すでに notmuch を使っているなら「画面を足す」感覚で入る。そうでないなら、土台の準備に 30 分は見てほしい。決める前に [できないこと](#できないこと) にも目を通すこと。
+**同期の道具を自分で回す気がある人。** プラグイン自身はサーバと話さない。メールはこの機械にあるか、無いなら読めない。機械に置くのは取得の道具で、アカウントによって違う。Gmail なら lieer が API で双方向に同期するので、ここで付けたタグは Gmail のラベルとして届く。IMAP のサーバなら mbsync が実ディレクトリの Maildir を埋め、プラグインはその間でファイルを動かして仕分ける。mbsync に運ばせない限り、サーバには何も戻らない。すでに notmuch を使っているなら「画面を足す」感覚で入る。そうでないなら、土台の準備に 30 分は見てほしい。決める前に [できないこと](#できないこと) にも目を通すこと。
 
 ```
-       Gmail
-         │  lieer (gmi sync — API で双方向)
-         ↓
-   ~/Mail/<アカウント>-lieer/mail/     アカウントごとに 1 つの置き場
-         │
-         ↓  notmuch。索引もアカウントごとに 1 つ
+       Gmail                                IMAP のサーバ
+         │  lieer (gmi sync — API で双方向)     │  mbsync (Pull だけで足りる)
+         ↓                                     ↓
+   ~/Mail/<アカウント>-lieer/mail/       ~/Mail/<アカウント>/{INBOX,Sent,…}/
+         │                                     │
+         ↓  notmuch。索引もアカウントごとに 1 つ  ↓
    leterejo ──→ notmuch    一覧・本文・検索、そして状態の変更すべて
             └─→ himalaya   送信のみ
 ```
@@ -29,7 +29,8 @@ English: [README.md](README.md)
 |---|---|
 | Neovim 0.10 以降 | `vim.system`、行内の仮想テキスト |
 | [notmuch][] | すべての読み取り元となる索引 |
-| [lieer][] (`gmi`) | メールの取得と、変更の Gmail への反映 |
+| [lieer][] (`gmi`) | Gmail: メールの取得と、変更の Gmail への反映 |
+| [mbsync][] | IMAP のアカウント: Maildir への取得。Pull だけで足りる |
 | [himalaya][] v2 | 送信 |
 | `w3m` (任意) | 本文が HTML しかないメールの整形 |
 | [snacks.nvim][] (任意) | メールが持つ画像の表示 |
@@ -77,6 +78,20 @@ require("leterejo").setup({
 
 送信には himalaya 自身の設定も要る ([himalaya の文書][himalaya])。使うのは送信側だけ。
 
+**IMAP のアカウント**では手順 1 と 2 が要らない。mbsync (でなくてもよい) が `~/Mail/<アカウント>/` を埋め、`notmuch new` が `new.tags` を空にして索引に入れる。アカウントには `lieer_dir` の代わりにディレクトリの名前を教える。
+
+```lua
+    company = {
+      email = "you@work.example",
+      display_name = "山田太郎",
+      notmuch_config = "~/.config/notmuch/company",
+      folders = { inbox = "INBOX", sent = "Sent",
+                  archive = "Archive", trash = "Trash", spam = "Junk" },
+    },
+```
+
+このアカウントでの仕分けはファイルの移動になる。`e` で `Archive` へ、`S` で `Junk` へ。mbsync の Patterns の外にあるディレクトリは手元だけのものになる。`queries`・`sync_lock`・`marker_tags` は `:help leterejo-accounts` を参照。
+
 ## 黙って壊れる 2 つのこと
 
 **`new.tags` は空にする。** lieer は登録するファイルすべてに、Gmail のラベルに加えて notmuch の `new.tags` を付ける。既定は `unread;inbox` なので**全メールが受信箱・未読**になる。さらに悪いことに、Gmail が持たないタグは次の押し出しで Gmail に送られるので、**古いメールを 1 通保管しただけで受信箱に戻る**。`:LeterejoSetup` は空のものを書く。
@@ -109,9 +124,9 @@ require("leterejo").setup({
 
 ## できないこと
 
-- **IMAP は使わない。** 読めるのは手元の索引にあるものだけ
+- **読み取りの経路で機外に出ない。** 読めるのは手元の索引にあるものだけ。取得の道具は自分の周期で動き、プラグインは起動しない
 - **受信箱は Gmail の「メイン」タブではない** (そうする気もない)。`INBOX` が付いた全部が入る。タブを取り込みたければ `gmi set --ignore-tags-remote ""` と全量 pull 1 回でふつうのタグとして入り、`g/` に「メイン相当」の見え方が出る。ただし**受信箱の定義は変えない** — 分類器の推測は、自分で選ぶ絞り込みであって、見えないものを決める既定ではない
-- **Gmail に書き込むのはタグと送信だけ。** フィルタも設定も、本当の削除も行わない
+- **Gmail に書き込むのはタグと送信だけ。** フィルタも設定も、本当の削除も行わない。IMAP のアカウントには何も書き戻さない。仕分けは手元のファイルの移動で、それがサーバに届くかは mbsync の設定であってプラグインの仕事ではない
 
 ## 設定
 
@@ -131,6 +146,7 @@ require("leterejo").setup({
 
 [notmuch]: https://notmuchmail.org/
 [lieer]: https://github.com/gauteh/lieer
+[mbsync]: https://isync.sourceforge.io/
 [himalaya]: https://github.com/pimalaya/himalaya
 [snacks.nvim]: https://github.com/folke/snacks.nvim
 [fzf-lua]: https://github.com/ibhagwan/fzf-lua

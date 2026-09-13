@@ -1,8 +1,9 @@
 # leterejo.nvim
 
 A mail client for Neovim that reads from a local [notmuch][] index, changes
-state by tagging, and sends through [himalaya][]. Mail is fetched by
-[lieer][], which syncs a Maildir against Gmail over its API.
+state by tagging, and sends through [himalaya][]. Fetching is someone else's
+job: [lieer][] for Gmail, over its API, or [mbsync][] — or anything that fills
+a Maildir — over IMAP for everything else.
 
 A list of fifty costs 37 ms and a body 10–20 ms, because nothing on the reading
 path leaves the machine.
@@ -15,19 +16,23 @@ that arrives as HTML — over half of them here — is rendered before it is sho
 
 ## Who this is for
 
-**Gmail, and someone willing to run a sync tool.** There is no IMAP path: mail
-is on this machine or it is not readable. If you already use notmuch, this will
-feel like putting a screen on it. If you do not, expect to spend half an hour
-setting the underneath up — and see [What it does not do](#what-it-does-not-do)
-before you decide.
+**Someone willing to run a sync tool.** The plugin never talks to a server:
+mail is on this machine or it is not readable. What puts it there depends on
+the account. For Gmail it is lieer, which speaks the API in both directions, so
+a tag put on here reaches Gmail as a label. For anything with IMAP it is
+mbsync, which fills a Maildir of real directories; the plugin then files mail
+by moving it between them, and nothing goes back up unless mbsync is told to
+carry it. If you already use notmuch, this will feel like putting a screen on
+it. If you do not, expect to spend half an hour setting the underneath up — and
+see [What it does not do](#what-it-does-not-do) before you decide.
 
 ```
-       Gmail
-         │  lieer (gmi sync — the API, both ways)
-         ↓
-   ~/Mail/<account>-lieer/mail/        one store per account
-         │
-         ↓  notmuch, one index per account
+       Gmail                              an IMAP server
+         │  lieer (gmi sync — API, both ways)  │  mbsync (pull is enough)
+         ↓                                     ↓
+   ~/Mail/<account>-lieer/mail/         ~/Mail/<account>/{INBOX,Sent,…}/
+         │                                     │
+         ↓  notmuch, one index per account     ↓
    leterejo ──→ notmuch    list, body, search, and every change of state
             └─→ himalaya   sending only
 ```
@@ -38,7 +43,8 @@ before you decide.
 |---|---|
 | Neovim 0.10+ | `vim.system`, inline virtual text |
 | [notmuch][] | the index everything is read from |
-| [lieer][] (`gmi`) | fetches mail and carries changes back to Gmail |
+| [lieer][] (`gmi`) | Gmail: fetches mail and carries changes back |
+| [mbsync][] | an IMAP account: fetches into a Maildir. Pull-only is enough |
 | [himalaya][] v2 | sends |
 | `w3m` (optional) | renders mail that has no plain-text part |
 | [snacks.nvim][] (optional) | draws images the message carries |
@@ -94,6 +100,24 @@ require("leterejo").setup({
 himalaya needs its own configuration for sending; see [its
 documentation][himalaya]. Only the sending half is used.
 
+**An IMAP account** skips steps 1 and 2: mbsync (or whatever you run) fills
+`~/Mail/<account>/`, `notmuch new` indexes it with `new.tags` empty, and the
+account names its directories instead of a `lieer_dir`:
+
+```lua
+    company = {
+      email = "you@work.example",
+      display_name = "Ada Lovelace",
+      notmuch_config = "~/.config/notmuch/company",
+      folders = { inbox = "INBOX", sent = "Sent",
+                  archive = "Archive", trash = "Trash", spam = "Junk" },
+    },
+```
+
+Filing on such an account moves the file: `e` puts it in `Archive`, `S` in
+`Junk`. Directories outside mbsync's patterns stay local. See
+`:help leterejo-accounts` for `queries`, `sync_lock` and `marker_tags`.
+
 ## Two things that fail silently
 
 **`new.tags` must be empty.** lieer applies notmuch's `new.tags` to every file
@@ -143,14 +167,17 @@ original carried, in the Attach field.
 
 ## What it does not do
 
-- **No IMAP.** Reading is the local index or nothing
+- **Nothing over the network on the reading path.** Reading is the local
+  index or nothing; the fetcher runs on its own schedule, not this plugin's
 - **The inbox is not Gmail's Primary tab**, and will not become it. It holds
   everything Gmail labels `INBOX`. To keep the tabs, `gmi set
   --ignore-tags-remote ""` and one full pull files them as ordinary tags, and
   `g/` offers a Primary-equivalent view — but a classifier's guess is a filter
   you reach for, not the default that decides what you never see
 - **Nothing writes to Gmail except tagging and sending.** No filters, no
-  settings, no delete-for-real
+  settings, no delete-for-real. On an IMAP account nothing is written back at
+  all: filing moves files here, and whether the server hears of it is
+  mbsync's configuration, not this plugin's
 
 ## Configuration
 
@@ -172,6 +199,7 @@ wanted:
 
 [notmuch]: https://notmuchmail.org/
 [lieer]: https://github.com/gauteh/lieer
+[mbsync]: https://isync.sourceforge.io/
 [himalaya]: https://github.com/pimalaya/himalaya
 [snacks.nvim]: https://github.com/folke/snacks.nvim
 [fzf-lua]: https://github.com/ibhagwan/fzf-lua
