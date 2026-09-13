@@ -170,13 +170,6 @@ wanted:
 | `preview`, `preview_min_width` | whether the body follows the cursor |
 | `attachment_handlers` | how a saved attachment is opened |
 
-## Design notes
-
-[design-notes.md](design-notes.md) records how this was arrived at and what was
-measured on the way, including the things that cost an evening: himalaya's
-Maildir backend being slower than IMAP, Gmail's bandwidth limit, why the first
-fetch is a full pull, and what lieer does when it refuses to push.
-
 [notmuch]: https://notmuchmail.org/
 [lieer]: https://github.com/gauteh/lieer
 [himalaya]: https://github.com/pimalaya/himalaya

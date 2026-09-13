@@ -129,10 +129,6 @@ require("leterejo").setup({
 | `preview` `preview_min_width` | 本文がカーソルに追従するか |
 | `attachment_handlers` | 保存した添付をどう開くか |
 
-## 設計ノート
-
-[design-notes.ja.md](design-notes.ja.md) に、どう考えてここに至ったかと、途中で測ったものが残してある。一晩を費やした事柄も含む — himalaya の Maildir 対応が IMAP より遅かったこと、Gmail の帯域制限、初回取得を全量 pull にする理由、lieer が押し出しを拒むときに何が起きるか。
-
 [notmuch]: https://notmuchmail.org/
 [lieer]: https://github.com/gauteh/lieer
 [himalaya]: https://github.com/pimalaya/himalaya
