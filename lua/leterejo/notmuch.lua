@@ -86,6 +86,82 @@ end
 
 -- Shaping ---------------------------------------------------------------
 
+-- ISO-2022-JP, including the characters Windows puts in it.
+--
+-- glibc's ISO-2022-JP knows JIS X 0208 and nothing more, and Outlook writes
+-- NEC's row 13 into the same escape — the circled numbers and Roman numerals,
+-- ① and Ⅱ and ㈱. On that byte pair iconv gives up, and gmime, which notmuch
+-- decodes through, carries on one byte out of step: from the Ⅱ to the end of
+-- the line every character is a different kanji, and the closing bracket is
+-- gone. Not a rare case here — 126 of the 200 newest company messages are
+-- ISO-2022-JP, and an audit is numbered Ⅱ.
+--
+-- So the escapes are followed by hand. The two-byte set becomes EUC-JP by
+-- setting the high bit on each byte, half-width kana get their EUC prefix,
+-- and the result goes to iconv as EUC-JP-MS, which does know row 13. Nothing
+-- else about the bytes changes. Returns nil when iconv still declines, so the
+-- caller can fall back to whatever it had.
+local function jis_to_utf8(raw)
+  local out, mode, i, n = {}, "ascii", 1, #raw
+  while i <= n do
+    local b = raw:byte(i)
+    if b == 27 then
+      local three, four = raw:sub(i, i + 2), raw:sub(i, i + 3)
+      if three == "\27(B" or three == "\27(J" then
+        mode, i = "ascii", i + 3
+      elseif three == "\27$B" or three == "\27$@" then
+        mode, i = "double", i + 3
+      elseif three == "\27(I" then
+        mode, i = "kana", i + 3
+      elseif four == "\27$(D" then
+        mode, i = "supplement", i + 4
+      else
+        table.insert(out, "\27")
+        i = i + 1
+      end
+    elseif mode == "double" and b >= 33 and b <= 126 and i < n then
+      table.insert(out, string.char(b + 128, raw:byte(i + 1) + 128))
+      i = i + 2
+    elseif mode == "supplement" and b >= 33 and b <= 126 and i < n then
+      table.insert(out, string.char(143, b + 128, raw:byte(i + 1) + 128))
+      i = i + 2
+    elseif mode == "kana" and b >= 33 and b <= 126 then
+      table.insert(out, string.char(142, b + 128))
+      i = i + 1
+    else
+      table.insert(out, string.char(b))
+      i = i + 1
+    end
+  end
+  local text = vim.iconv(table.concat(out), "euc-jp-ms", "utf-8")
+  if not text then
+    return nil
+  end
+  -- EUC-JP-MS reads six ordinary JIS characters the Windows way — the wave
+  -- dash as a full-width tilde, the minus as a full-width hyphen, and so on.
+  -- They are put back as glibc's ISO-2022-JP reads them, so a message decoded
+  -- here matches one decoded by gmime character for character, and a search
+  -- for either finds both.
+  for from, to in pairs({
+    ["\u{FF5E}"] = "\u{301C}", -- ～ → 〜
+    ["\u{2225}"] = "\u{2016}", -- ∥ → ‖
+    ["\u{FF0D}"] = "\u{2212}", -- －(full-width hyphen) → −
+    ["\u{FFE0}"] = "\u{00A2}", -- ￠ → ¢
+    ["\u{FFE1}"] = "\u{00A3}", -- ￡ → £
+    ["\u{FFE2}"] = "\u{00AC}", -- ￢ → ¬
+  }) do
+    text = text:gsub(from, to)
+  end
+  return text
+end
+M.jis_to_utf8 = jis_to_utf8
+
+-- Whether bytes are ISO-2022-JP, whatever they were declared as. The escape
+-- into the two-byte set is the one thing every Japanese message in it has.
+local function is_jis(raw)
+  return raw:find("\27$B", 1, true) ~= nil or raw:find("\27$@", 1, true) ~= nil
+end
+
 -- Decode one RFC 2047 encoded word.
 --
 -- Japanese mail encodes header text this way constantly, usually in
@@ -113,6 +189,9 @@ local function decode_word(charset, encoding, body)
 
   if charset:lower() == "utf-8" or charset:lower() == "us-ascii" then
     return raw
+  end
+  if charset:lower():match("^iso%-?2022%-?jp") then
+    return jis_to_utf8(raw) or vim.iconv(raw, charset, "utf-8")
   end
   return vim.iconv(raw, charset, "utf-8")
 end
@@ -968,6 +1047,72 @@ end
 -- which is how the key that switches halves asks for the other one. The third
 -- value handed to `on_done` says which half was shown — "html", "plain", or
 -- nil when the message was not sent twice and there is nothing to switch to.
+-- The text parts of a `--format=text` rendering, by ID.
+local function plain_part_ids(text)
+  local ids = {}
+  for id in text:gmatch("\012part{ ID: (%d+), Content%-type: text/plain") do
+    table.insert(ids, tonumber(id))
+  end
+  return ids
+end
+
+-- The same rendering with one part's content replaced.
+--
+-- A part opens on a line of its own and closes with "\fpart}" written straight
+-- after the content — on its own line when the content ends in a newline,
+-- appended to the last line when it does not. The replacement is written the
+-- same way, so what strip_markers sees is shaped as notmuch shapes it.
+local function with_part_content(text, part, content)
+  local out, inside = {}, false
+  for _, line in ipairs(vim.split(text or "", "\n", { plain = true })) do
+    if not inside and line:match("^\012part{ ID: " .. tostring(part) .. ",") then
+      inside = true
+      table.insert(out, line)
+      table.insert(out, content .. "\012part}")
+    elseif inside then
+      if line:match("\012part}%s*$") then
+        inside = false
+      end
+    else
+      table.insert(out, line)
+    end
+  end
+  return table.concat(out, "\n")
+end
+
+-- Decode again the text parts gmime got wrong.
+--
+-- The rendering does not say what charset a part was in, and the bytes are
+-- the only thing that does: each text/plain part is read back raw, and one
+-- that turns out to be ISO-2022-JP is decoded here (see jis_to_utf8) and put
+-- in place of what gmime made of it. One extra call per text part, 10–20 ms
+-- each, and most messages have one.
+local function redecode_jis(account, id, text, on_done)
+  local ids = plain_part_ids(text)
+  local function step(k)
+    local part = ids[k]
+    if not part then
+      return on_done(text)
+    end
+    run(account, {
+      "show",
+      "--format=raw",
+      "--part=" .. tostring(part),
+      "--entire-thread=false",
+      id_query(id),
+    }, function(ok, raw)
+      if ok and raw ~= "" and is_jis(raw) then
+        local decoded = jis_to_utf8(raw)
+        if decoded then
+          text = with_part_content(text, part, (decoded:gsub("\r\n", "\n")))
+        end
+      end
+      step(k + 1)
+    end)
+  end
+  step(1)
+end
+
 function M.read(account, id, on_done, opts)
   opts = opts or {}
 
@@ -987,11 +1132,12 @@ function M.read(account, id, on_done, opts)
     end)
   end
 
-  show({}, function(ok, out)
+  show({}, function(ok, shown)
     if not ok then
-      return on_done(false, out)
+      return on_done(false, shown)
     end
 
+    redecode_jis(account, id, shown, function(out)
     local marker = "Non-text part: text/html"
     if not out:find(marker, 1, true) then
       return on_done(true, strip_markers(out))
@@ -1064,6 +1210,7 @@ function M.read(account, id, on_done, opts)
           )
         end)
       end)
+    end)
     end)
   end)
 end
