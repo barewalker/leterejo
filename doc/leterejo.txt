@@ -381,6 +381,12 @@ Per-account options, under `accounts.<name>`:
                         archiving moves the file into the `archive` directory
     sync_lock           the lock file the fetcher holds while it writes. Taken
                         before moving files
+    fetch_command       what `u` runs to fetch mail here when lieer does not,
+                        e.g. { "~/bin/work-mail-sync.sh" }. Run as given in
+                        this account's notmuch environment, and the list is
+                        read again when it exits. Without it, `u` on such an
+                        account only reads the list again
+    fetch_timeout       how long to wait for it, in milliseconds (300000)
     marker_tags         tags something else already wrote for the two computed
                         markers, e.g. { suspicious = "bidi-control",
                         obfuscated = "zero-width" }. Turns `is:suspicious` and
