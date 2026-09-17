@@ -134,6 +134,12 @@ M.defaults = {
   --                while it writes, e.g. "~/.cache/work-mail-sync.lock". Taken
   --                before files are moved, so a rename cannot land in the
   --                middle of a running fetch
+  --   fetch_command : what `u` runs to fetch this account's mail when lieer
+  --                does not, e.g. { "~/bin/work-mail-sync.sh" }. Run as
+  --                given, in this account's notmuch environment; the list is
+  --                read again when it exits. A timer may run the same command
+  --                on its own — the command is what keeps the two apart
+  --   fetch_timeout : how long to wait for it, in milliseconds. 300000
   --   queries    : mailbox name -> a notmuch query, for views that are not one
   --                directory, e.g. { inbox = "tag:inbox" }
   --   query_for  : function(mailbox) -> notmuch query, when the two tables

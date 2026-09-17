@@ -860,16 +860,34 @@ end
 
 -- Fetch what the server has, then read the list again.
 --
--- Nothing arrives on its own yet, so this is the only thing that brings new
--- mail down. The list is read again either way: a sync that failed leaves the
--- index exactly as it was, which is still worth drawing.
+-- On a lieer account that is `gmi sync`. On an account something else fills,
+-- it is whatever command the account names — or nothing, when it names none,
+-- in which case the list is simply read again: the timer that fills the
+-- store may have run since. The list is read again either way: a fetch that
+-- failed leaves the index exactly as it was, which is still worth drawing.
 function M.sync()
   local lieer = require("leterejo.lieer")
+  local fetch = require("leterejo.fetch")
   local account = state.account
 
   if not lieer.configured(account) then
-    state.reset_list()
-    return M.refresh()
+    if not fetch.configured(account) then
+      state.reset_list()
+      return M.refresh()
+    end
+
+    vim.notify(lang.t("syncing"), vim.log.levels.INFO)
+    return fetch.run(account, function(ok, res)
+      if ok then
+        vim.notify(lang.t("fetched"), vim.log.levels.INFO)
+      else
+        vim.notify(lang.e("fetch_failed", tostring(res)), vim.log.levels.WARN)
+      end
+      if state.account == account then
+        state.reset_list()
+        M.refresh()
+      end
+    end)
   end
 
   vim.notify(lang.t("syncing"), vim.log.levels.INFO)
