@@ -58,12 +58,49 @@ local function ordered_here()
   return (order == "from" or order == "subject") and order or nil
 end
 
+-- Whether an address is one of the user's own.
+--
+-- Any account's, not only the one being read: mail goes out as one address
+-- through another's server, and the copy that comes back is still one's own.
+local function is_own(email)
+  if type(email) ~= "string" or email == "" then
+    return false
+  end
+  for _, a in pairs(config.options.accounts or {}) do
+    if type(a.email) == "string" and a.email:lower() == email:lower() then
+      return true
+    end
+  end
+  return false
+end
+
+-- What the sender column says for a row.
+--
+-- A message one sent oneself says who it went to instead. The copy of a reply
+-- sent from Outlook at work comes back into the inbox by Bcc, under the
+-- subject of the conversation it answers, and with one's own name in this
+-- column it reads as the other side's message (2026-09-26: a reply in a
+-- thread of someone else's was taken for one of theirs). notmuch and mutt do
+-- the same.
+--
+-- A thread row names its authors without addresses, so it is left as it is.
+local function sender_label(e)
+  local first = (e.from or {})[1]
+  if first and is_own(first.email) then
+    local to = (e.to or {})[1] and e.to or e.cc
+    if to and to[1] then
+      return "→ " .. util.address_label(to)
+    end
+  end
+  return util.address_label(e.from)
+end
+
 -- What a row sorts under.
 --
 -- Read off the row rather than fetched, so the order is one that can be checked
 -- by looking at the screen: the sender column is the sender it sorted on.
 local function from_key(e)
-  return util.strip_invisible(util.address_label(e.from)):lower()
+  return util.strip_invisible(sender_label(e)):lower()
 end
 
 -- The subject with the reply and forward prefixes taken off, so that a message
@@ -339,7 +376,7 @@ local function render_row(e, width)
   --
   -- So the one is worth a column and the other is not. `is:obfuscated` finds
   -- the zero-width ones for whoever goes looking.
-  local from, bidi_a = util.strip_invisible(util.address_label(e.from))
+  local from, bidi_a = util.strip_invisible(sender_label(e))
   local subject, bidi_b = util.strip_invisible(e.subject or lang.t("no_subject"))
   local unread = util.is_unseen(e)
 

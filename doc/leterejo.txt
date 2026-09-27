@@ -208,6 +208,12 @@ By subject ignores `Re:`, `Fwd:` and 転送:, however many have piled up, so a
 message and the replies to it land together. The order is shown in the heading
 whenever it is not the usual one, and switching mailbox keeps it.
 
+A message you sent yourself — From is the `email` of any account — shows who
+it went to in the sender column instead, as `→ name`. The copy of a reply that
+comes back into the inbox by Bcc would otherwise carry your own name under the
+subject of someone else's conversation. Ordering by sender goes by what the
+column shows. A conversation row lists its authors as they are.
+
 In the message body: r R f A, s F e d S M as above, plus >
 
     h       show or fold the headers
