@@ -74,6 +74,7 @@ end
 local HINTS = {
   { "reply", "hint_reply" },
   { "forward", "hint_forward" },
+  { "edit_draft", "hint_edit_draft" },
   { "attachments", "hint_attachments" },
   { "toggle_headers", "hint_headers" },
   { "toggle_seen", "hint_seen" },
@@ -381,6 +382,17 @@ local function setup_keymaps(buf)
         local e = current_envelope()
         if e then
           require("leterejo.compose").forward(e)
+        else
+          vim.notify(lang.e("source_not_found"), vim.log.levels.WARN)
+        end
+      end,
+    },
+    edit_draft = {
+      desc = lang.t("desc_edit_draft"),
+      handler = function()
+        local e = current_envelope()
+        if e then
+          require("leterejo.compose").edit_draft(e)
         else
           vim.notify(lang.e("source_not_found"), vim.log.levels.WARN)
         end

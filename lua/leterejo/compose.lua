@@ -22,6 +22,8 @@ local BUFNAME = "leterejo://compose"
 --   kind    : "compose" | "reply" | "forward"
 --   id      : id of the message being replied to or forwarded
 --   mailbox : where that message lives
+--   server  : { account, id } of the draft on the server this was opened from,
+--             put away once the message has gone (see M.edit_draft)
 local pending = nil
 
 local function find_buf()
@@ -841,6 +843,21 @@ function M.send()
   local function done()
     vim.notify(lang.t("sent"), vim.log.levels.INFO)
 
+    -- The draft on the server it came from goes too, or the message would
+    -- stay behind in Drafts as though it had never been sent. Sending cannot
+    -- be taken back, so a failure here is said plainly and leaves the draft
+    -- where it is rather than anything more clever.
+    local server = pending and pending.server
+    if server then
+      require("leterejo.actions").retire_draft(server.account, server.id, function(ok, why)
+        if ok then
+          vim.notify(lang.t("draft_retired"), vim.log.levels.INFO)
+        else
+          vim.notify(lang.e("draft_retire_failed", tostring(why)), vim.log.levels.WARN)
+        end
+      end)
+    end
+
     -- The draft has been sent, so it is no longer a draft, and the copies
     -- taken out of the index to attach have done their work.
     if pending and pending.draft then
@@ -938,6 +955,21 @@ function M.upload()
       return vim.notify(lang.e("draft_upload_failed") .. "\n" .. tostring(out), vim.log.levels.ERROR)
     end
     vim.notify(lang.t("draft_uploaded", mailbox), vim.log.levels.INFO)
+
+    -- Opened from a draft already there, this is its next version rather than
+    -- a second draft. IMAP cannot replace, only add, so the one it came from
+    -- is put away now that the new one is up.
+    local server = pending and pending.server
+    if server then
+      pending.server = nil
+      require("leterejo.actions").retire_draft(server.account, server.id, function(retired, why)
+        if retired then
+          vim.notify(lang.t("draft_upload_retired"), vim.log.levels.INFO)
+        else
+          vim.notify(lang.t("prefix") .. tostring(why), vim.log.levels.WARN)
+        end
+      end)
+    end
   end
 
   -- Nothing to add: himalaya can build it and file it in one step. The same
@@ -975,6 +1007,11 @@ local function discard()
       end
       if pending and pending.temporary then
         vim.fn.delete(pending.temporary, "rf")
+      end
+      -- What is discarded is this copy. The one on the server is someone
+      -- else's to delete — the webmail's, or `d` in the list.
+      if pending and pending.server then
+        vim.notify(lang.t("draft_discard_server"), vim.log.levels.INFO)
       end
       pending = nil
       vim.bo[buf].modified = false
@@ -1032,6 +1069,24 @@ local function draft_headers()
   end
   if pending.headline then
     table.insert(out, "X-Leterejo-Quote: " .. pending.headline)
+  end
+  -- What threads it. Kept as well as the id above, because that id is only a
+  -- name: a reply saved and taken up again used to go out with neither
+  -- In-Reply-To nor References, and arrive as a conversation of its own.
+  if pending.reply_to then
+    table.insert(out, "X-Leterejo-In-Reply-To: " .. pending.reply_to)
+  end
+  if pending.references then
+    table.insert(out, "X-Leterejo-References: " .. pending.references)
+  end
+  -- The draft on the server this came from, so that sending it from a saved
+  -- copy still puts that one away and one message does not become two.
+  if pending.server then
+    table.insert(out, "X-Leterejo-Server-Draft: " .. pending.server.account .. " " .. pending.server.id)
+  end
+  -- Attachments taken out into a temporary directory, cleared when it goes.
+  if pending.temporary then
+    table.insert(out, "X-Leterejo-Temporary: " .. pending.temporary)
   end
   return out
 end
@@ -1458,6 +1513,20 @@ function M.open_draft(path)
         p.mailbox = value
       elseif name == "x-leterejo-quote" then
         p.headline = value
+      elseif name == "x-leterejo-in-reply-to" then
+        p.reply_to = value
+      elseif name == "x-leterejo-references" then
+        p.references = value
+      elseif name == "x-leterejo-server-draft" then
+        local account, id = value:match("^(%S+)%s+(.+)$")
+        p.server = account and { account = account, id = id } or nil
+      elseif name == "x-leterejo-temporary" then
+        -- Deleted whole when the message goes, so only ever one of ours: a
+        -- draft is a file anyone can edit, and this names what `rm -rf` gets.
+        local ours = vim.fn.stdpath("cache") .. "/leterejo/"
+        if value:sub(1, #ours) == ours and not value:find("/%.%./") then
+          p.temporary = value
+        end
       elseif name == "x-leterejo-account" then
         -- Written by an older draft; From decides the route now.
         p.account = value
@@ -1475,6 +1544,133 @@ function M.open_draft(path)
 
   pending = p
   open_buffer(values, #body > 0 and body or { "" })
+end
+
+-- Where a draft from the server puts its attachments while it is written.
+-- The same arrangement as a forward's, for the same reasons.
+local function server_draft_dir(id)
+  local digest = vim.fn.sha256(tostring(id)):sub(1, 16)
+  return vim.fn.stdpath("cache") .. "/leterejo/draft/" .. digest
+end
+
+-- Open a draft that is on the server — written in the webmail, on a phone, or
+-- filed by himalaya — to finish and send here.
+--
+-- The other direction from `upload`. What comes into the buffer is what the
+-- draft says: its headers into the fields, its text part into the body, and
+-- its attachments taken out as files and named in Attach. It stays tied to the
+-- draft it came from, through :w and all, and once it is sent that draft is put
+-- away (actions.retire_draft) so that Drafts does not keep a copy of a message
+-- that has already gone.
+--
+--   account : the account whose index holds it; the one on screen if omitted
+function M.edit_draft(envelope, account)
+  if not envelope then
+    return
+  end
+  if not util.has_flag(envelope, "draft") then
+    return vim.notify(lang.e("draft_not_draft"), vim.log.levels.WARN)
+  end
+
+  account = account or state.account
+  local id = envelope.id
+  local dir = server_draft_dir(id)
+
+  vim.notify(lang.t("draft_opening"), vim.log.levels.INFO)
+
+  local headers, text, attach
+  local waiting = 3
+
+  local function open()
+    stash()
+
+    -- A draft of a reply carries what threads it. Kept as it was written, and
+    -- the id it answers in the form notmuch looks messages up by.
+    local reply_to = headers["in-reply-to"]
+    local answers = reply_to and reply_to:match("<([^>]+)>")
+
+    local subject = headers.subject or envelope.subject or ""
+
+    pending = {
+      kind = answers and "reply" or "compose",
+      id = answers,
+      account = account,
+      original_subject = subject,
+      reply_to = reply_to,
+      references = headers.references or reply_to,
+      server = { account = account, id = id },
+      temporary = #attach > 0 and dir or nil,
+    }
+
+    local lines = vim.split(text or "", "\n", { plain = true })
+    while #lines > 1 and lines[#lines] == "" do
+      table.remove(lines)
+    end
+
+    open_buffer({
+      from = headers.from or ((config.options.accounts or {})[account] or {}).email or "",
+      to = headers.to or "",
+      cc = headers.cc or "",
+      bcc = headers.bcc or "",
+      subject = subject,
+      attach = table.concat(attach, ", "),
+    }, lines, 1)
+
+    if #attach > 0 then
+      vim.notify(lang.t("forward_attachments", #attach), vim.log.levels.INFO)
+    end
+  end
+
+  local function one_done()
+    waiting = waiting - 1
+    if waiting == 0 then
+      open()
+    end
+  end
+
+  notmuch.headers_of(account, id, { "from", "to", "cc", "bcc", "subject", "in-reply-to", "references" }, function(ok, found)
+    headers = ok and found or {}
+    one_done()
+  end)
+
+  notmuch.draft_text(account, id, function(ok, found)
+    if ok and found then
+      text = found
+      return one_done()
+    end
+
+    -- No text part: a draft written as HTML only. The rendering is the next
+    -- best thing, without the header block it opens with and the lines that
+    -- stand where the attachments were — those come in as files instead.
+    notmuch.read(account, id, function(read_ok, out)
+      local body, started = {}, false
+      for _, line in ipairs(vim.split(read_ok and out or "", "\n", { plain = true })) do
+        if started then
+          if not line:match("^Non%-text part: ") and not line:match("^Attachment: ") then
+            table.insert(body, line)
+          end
+        elseif line == "" then
+          started = true
+        end
+      end
+      text = table.concat(body, "\n")
+      one_done()
+    end)
+  end)
+
+  notmuch.save_attachments(account, id, dir, function(ok, res)
+    attach = {}
+    for _, saved in ipairs(ok and (res.attachments or {}) or {}) do
+      table.insert(attach, saved.path)
+    end
+    if not ok then
+      vim.notify(lang.e("forward_attachments_failed"), vim.log.levels.WARN)
+    end
+    if #attach == 0 then
+      vim.fn.delete(dir, "rf")
+    end
+    one_done()
+  end)
 end
 
 -- The drafts there are, newest first.
@@ -1499,40 +1695,107 @@ local function draft_files()
   return found
 end
 
--- Pick one of the saved drafts and open it.
+-- The drafts on the server for an account, as the index has them.
+--
+-- A draft already put in the trash still carries the draft tag — Gmail keeps
+-- the label on it — so those are left out, or everything discarded in the
+-- webmail would be offered again.
+local function server_drafts(account, on_done)
+  local a = (config.options.accounts or {})[account]
+  if not a or a.send_only then
+    return on_done({})
+  end
+
+  local tags = config.options.tags or {}
+  local where = ((a.folders or {}).drafts or (a.queries or {}).drafts) and notmuch.query_for(account, "drafts")
+    or "tag:draft"
+  local query = string.format(
+    "(%s) and not tag:%s and not tag:%s",
+    where,
+    tags.trash or "trash",
+    tags.spam or "spam"
+  )
+
+  notmuch.list_at(account, query, 0, 50, "newest", function(ok, rows)
+    on_done(ok and rows or {})
+  end)
+end
+
+-- Pick one of the drafts and open it: the ones saved here, then the ones on
+-- the server for the account on screen.
 function M.drafts()
   local files = draft_files()
-  if #files == 0 then
-    return vim.notify(lang.t("draft_none"), vim.log.levels.INFO)
-  end
+  local account = state.account
 
-  local labels = {}
-  for _, name in ipairs(files) do
-    -- Say what it is by its own headers rather than its file name: a subject
-    -- typed after the first save would otherwise never show.
-    local ok, head = pcall(vim.fn.readfile, draft_dir() .. "/" .. name, "", 12)
-    local to, subject = "", ""
-    for _, line in ipairs(ok and head or {}) do
-      to = line:match("^[Tt]o:%s*(.*)$") or to
-      subject = line:match("^[Ss]ubject:%s*(.*)$") or subject
+  server_drafts(account, function(remote)
+    local labels, open = {}, {}
+    local taken = {}
+
+    for _, name in ipairs(files) do
+      -- Say what it is by its own headers rather than its file name: a subject
+      -- typed after the first save would otherwise never show. Read to the end
+      -- of the header block, which the fields leterejo keeps have lengthened.
+      local ok, head = pcall(vim.fn.readfile, draft_dir() .. "/" .. name, "", 40)
+      local to, subject = "", ""
+      for _, line in ipairs(ok and head or {}) do
+        if line == "" then
+          break
+        end
+        to = line:match("^[Tt]o:%s*(.*)$") or to
+        subject = line:match("^[Ss]ubject:%s*(.*)$") or subject
+
+        -- A server draft already being worked on here is offered once, as the
+        -- copy with the work in it.
+        local from_server = line:match("^X%-Leterejo%-Server%-Draft:%s*%S+%s+(.+)$")
+        if from_server then
+          taken[from_server] = true
+        end
+      end
+
+      local when = name:match("^(%d%d%d%d)(%d%d)(%d%d)%-(%d%d)(%d%d)")
+      when = when and name:sub(5, 6) .. "-" .. name:sub(7, 8) .. " " .. name:sub(10, 11) .. ":" .. name:sub(12, 13)
+        or name
+
+      table.insert(labels, string.format(
+        "%s  %s  → %s",
+        when,
+        subject ~= "" and subject or lang.t("no_subject"),
+        to ~= "" and to or "—"
+      ))
+      table.insert(open, function()
+        M.open_draft(draft_dir() .. "/" .. name)
+      end)
     end
 
-    local when = name:match("^(%d%d%d%d)(%d%d)(%d%d)%-(%d%d)(%d%d)")
-    when = when and name:sub(5, 6) .. "-" .. name:sub(7, 8) .. " " .. name:sub(10, 11) .. ":" .. name:sub(12, 13)
-      or name
-
-    table.insert(labels, string.format(
-      "%s  %s  → %s",
-      when,
-      subject ~= "" and subject or lang.t("no_subject"),
-      to ~= "" and to or "—"
-    ))
-  end
-
-  vim.ui.select(labels, { prompt = lang.t("pick_draft") }, function(_, idx)
-    if idx then
-      M.open_draft(draft_dir() .. "/" .. files[idx])
+    for _, e in ipairs(remote) do
+      if not taken[tostring(e.id)] then
+        local to = util.address_label(e.to)
+        table.insert(labels, string.format(
+          "%s  %s  %s  → %s",
+          util.format_date(e.date),
+          lang.t("draft_server_mark"),
+          util.strip_invisible(e.subject ~= "" and e.subject or lang.t("no_subject")),
+          to ~= "" and to or "—"
+        ))
+        table.insert(open, function()
+          -- Marked as a draft whatever the index said, since the query that
+          -- found it is what makes it one.
+          e.flags = e.flags or {}
+          table.insert(e.flags, { iana = "draft" })
+          M.edit_draft(e, account)
+        end)
+      end
     end
+
+    if #labels == 0 then
+      return vim.notify(lang.t("draft_none"), vim.log.levels.INFO)
+    end
+
+    vim.ui.select(labels, { prompt = lang.t("pick_draft") }, function(_, idx)
+      if idx then
+        open[idx]()
+      end
+    end)
   end)
 end
 

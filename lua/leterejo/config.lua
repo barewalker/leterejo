@@ -673,7 +673,11 @@ M.defaults = {
       raw_source = "gH", -- the whole message, MIME and all
       preview = "p", -- stop the body following the cursor, or let it again
       refresh = "u", -- refetch
-      drafts = "D", -- open a saved draft
+      drafts = "D", -- open a draft: saved here, or on the server
+      -- Open the draft under the cursor to finish and send. Only a draft:
+      -- sending it puts the one on the server away, which is not something
+      -- to do to any other message.
+      edit_draft = "E",
       -- Not "\\": that is the local leader in a common setup (LazyVim), where
       -- pressing it waits for a second key and this never fires. "g" is
       -- already a prefix, so hanging this off it takes no single key away.
@@ -692,6 +696,7 @@ M.defaults = {
       reply = "r", -- reply, per reply_mode
       reply_other = "R", -- reply the other way (all <-> sender)
       forward = "f", -- forward
+      edit_draft = "E", -- open this draft to finish and send
       attachments = "A", -- save and open attachments (g would break gg)
       toggle_headers = "h", -- toggle the folded headers
       raw_headers = "H", -- the whole header block, as it arrived

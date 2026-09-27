@@ -144,7 +144,7 @@ In the list:
 | `m` `a` | switch tag, switch account |
 | `x` `o` | pick this row out (visual: the range), change the order |
 | `/` `g/` `<esc>` | filter, pick a filter, clear the selection then the filter |
-| `A` `D` | attachments, saved drafts |
+| `A` `D` `E` | attachments, drafts (here and on the server), finish this draft |
 | `H` `gH` | the whole header block, the whole message as it arrived |
 | `p` `u` `?` `q` | preview on/off, fetch and reload, keys, close |
 | `l` `h` `<tab>` | open, close, toggle a conversation |
@@ -163,7 +163,9 @@ Writing: `<leader>hs` sends, `<leader>hw` (or `:w`) saves the draft,
 `<leader>hu` files it on the server, `<leader>ha` suggests an address,
 `<leader>hg` picks a signature, `<leader>hq` discards. In the header area Enter
 moves to the next field and `dd` clears one. A forward carries what the
-original carried, in the Attach field.
+original carried, in the Attach field. A draft on the server — written in the
+webmail, say — opens with `E` to be finished here, and once sent it goes to the
+trash rather than staying in Drafts.
 
 ## What it does not do
 

@@ -1626,6 +1626,12 @@ local function setup_keymaps(buf)
         require("leterejo.compose").drafts()
       end,
     },
+    edit_draft = {
+      desc = lang.t("desc_edit_draft"),
+      handler = on_row(function(e)
+        require("leterejo.compose").edit_draft(e)
+      end),
+    },
     reply = {
       desc = lang.t("desc_reply"),
       handler = on_row(function(e)
@@ -1661,6 +1667,7 @@ M.HINTS = {
   { "forward", "hint_forward" },
   { "compose", "hint_compose" },
   { "drafts", "hint_drafts" },
+  { "edit_draft", "hint_edit_draft" },
   { "toggle_seen", "hint_seen" },
   { "trash", "hint_trash" },
   { "archive", "hint_archive" },

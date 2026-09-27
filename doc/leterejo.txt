@@ -170,7 +170,7 @@ In the list (`filetype=leterejo-envelopes`):
     d  S    trash, spam                 g/    pick a filter
     x       pick this row out           o     change the order
     A       attachments                 <Esc> clear the selection, then filter
-    D       saved drafts                p     body follows the cursor, or not
+    D  E    drafts, finish this draft   p     body follows the cursor, or not
     H  gH   the headers, the whole file u     fetch and read again
     l  h    open, close a conversation  ?     the keys
     <Tab>   toggle a conversation       q     close
@@ -214,7 +214,7 @@ comes back into the inbox by Bcc would otherwise carry your own name under the
 subject of someone else's conversation. Ordering by sender goes by what the
 column shows. A conversation row lists its authors as they are.
 
-In the message body: r R f A, s F e d S M as above, plus >
+In the message body: r R f E A, s F e d S M as above, plus >
 
     h       show or fold the headers
     H  gH   the whole header block, the whole message
@@ -339,6 +339,25 @@ no account owns keeps the account the draft names, which is the alias case.
 Drafts are files under stdpath("state"), saved by `:w`. Sending is its own key
 and nothing else does it. `<leader>hu` also files a copy on the server for
 reaching from elsewhere.
+
+                                                      *leterejo-server-drafts*
+The other way round: a draft written in the webmail, on a phone, or filed by
+himalaya can be finished here. `D` lists those of the account on screen after
+the ones saved here, marked [server]; `E` opens the draft under the cursor in
+the list or the body. Its headers go into the fields, its text part into the
+body, and its attachments into the Attach field as files taken out of it.
+
+It stays tied to the draft it came from, `:w` and all. Once it is sent, that
+draft goes to the trash, so Drafts does not keep a message that has gone — on
+Gmail by the trash label, since lieer will not change the draft one; where a
+mailbox is a directory by moving the file from `folders.drafts` to
+`folders.trash`. Sending cannot be taken back, so if putting the draft away
+fails that is said, and the draft is left where it was. `<leader>hu` on such a
+message files the new version and trashes the one it came from, so there is
+still one. Discarding leaves the one on the server alone.
+
+A draft in the trash still carries the draft tag on Gmail, so those are not
+offered.
 
 Replies are assembled here — himalaya's `message reply` wants an id the index
 does not have — with the recipients from the original, one "Re:", the quote in

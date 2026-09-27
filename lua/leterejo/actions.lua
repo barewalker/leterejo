@@ -456,6 +456,68 @@ function M.trash(envelope, after)
   end)
 end
 
+-- Put a draft from the server away once what it became has left.
+--
+-- Called from the compose buffer, not from a list, so it names its account
+-- rather than reading the one on screen: by the time a message is sent the
+-- list may be showing something else entirely.
+--
+-- To the trash rather than out of existence, like every other delete here. On
+-- Gmail that is also the only way: lieer treats `draft` as a label it may not
+-- change (remote.py, `read_only_tags`), so taking the tag off would be undone
+-- by the next pull. Trashing a draft on Gmail takes it out of Drafts, and the
+-- push is checked the same way every other change is.
+--
+-- Where a mailbox is a directory the file moves, and that needs both ends
+-- named. A store that says neither is told so instead of being tagged — a tag
+-- there would report success and leave the draft where it was.
+--
+--   on_done(ok, why)
+function M.retire_draft(account, id, on_done)
+  on_done = on_done or function() end
+  local a = (config.options.accounts or {})[account] or {}
+
+  if config.is_readonly(account) then
+    return on_done(false, lang.t("readonly_refused", account))
+  end
+
+  local function refresh()
+    if state.account == account then
+      require("leterejo.ui.envelopes").refresh()
+    end
+  end
+
+  if a.folders and next(a.folders) ~= nil then
+    local from, to = notmuch.folder_of(account, "drafts"), notmuch.folder_of(account, "trash")
+    if not from then
+      return on_done(false, lang.t("draft_no_drafts_folder", account))
+    end
+    if not to then
+      return on_done(false, lang.t("draft_no_trash_folder", account))
+    end
+
+    return notmuch.move_to_folder(account, { id }, from, to, function(ok, res)
+      if not ok then
+        return on_done(false, res)
+      end
+      notmuch.reindex(account, function()
+        refresh()
+        on_done(true)
+      end)
+    end)
+  end
+
+  local change = { add = { tag("trash") } }
+  notmuch.tag(account, id, change, function(ok, res)
+    if not ok then
+      return on_done(false, res)
+    end
+    refresh()
+    on_done(true)
+    push(account, id, change)
+  end)
+end
+
 -- Report as spam. On Gmail the label is what trains the filter.
 function M.spam(envelope, after)
   if moves_files() then

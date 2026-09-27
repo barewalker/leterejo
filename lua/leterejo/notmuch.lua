@@ -1215,6 +1215,59 @@ function M.read(account, id, on_done, opts)
   end)
 end
 
+-- What a draft says, as it was typed.
+--
+-- Not M.read: that is for reading, and hands back the headers on top and a
+-- line saying `Non-text part: application/pdf` wherever an attachment was —
+-- which, put back into a draft, would go out as part of the message. What a
+-- draft needs is the text part alone, and the attachments are taken out as
+-- files beside it.
+--
+-- A draft written only as HTML (the webmail's, with formatting) has no text
+-- part. That one comes back as nil, and the caller falls back to the rendering.
+function M.draft_text(account, id, on_done)
+  run_json(account, {
+    "show",
+    "--format=json",
+    "--entire-thread=false",
+    "--body=true",
+    id_query(id),
+  }, function(ok, tree)
+    if not ok then
+      return on_done(false, tree)
+    end
+
+    local function find(part)
+      if type(part) ~= "table" then
+        return nil
+      end
+      local kind = tostring(part["content-type"] or ""):lower()
+      local disposition = tostring(part["content-disposition"] or ""):lower()
+      if kind == "text/plain" and disposition ~= "attachment" and type(part.content) == "string" then
+        return part.content
+      end
+      for _, child in ipairs(type(part.content) == "table" and part.content or {}) do
+        local found = find(child)
+        if found then
+          return found
+        end
+      end
+      return nil
+    end
+
+    local msg = collect_messages(tree, {})[1]
+    local text
+    for _, part in ipairs(msg and msg.body or {}) do
+      text = find(part)
+      if text then
+        break
+      end
+    end
+
+    on_done(true, text and (text:gsub("\r\n", "\n")) or nil)
+  end)
+end
+
 -- Repairing an attachment's name -----------------------------------------
 --
 -- notmuch cuts a filename at an opening parenthesis:

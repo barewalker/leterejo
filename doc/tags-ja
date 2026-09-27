@@ -16,6 +16,7 @@ leterejo-order	leterejo.jax	/*leterejo-order*
 leterejo-pitfalls	leterejo.jax	/*leterejo-pitfalls*
 leterejo-requirements	leterejo.jax	/*leterejo-requirements*
 leterejo-selection	leterejo.jax	/*leterejo-selection*
+leterejo-server-drafts	leterejo.jax	/*leterejo-server-drafts*
 leterejo-setup	leterejo.jax	/*leterejo-setup*
 leterejo-source	leterejo.jax	/*leterejo-source*
 leterejo-tag-safety	leterejo.jax	/*leterejo-tag-safety*
