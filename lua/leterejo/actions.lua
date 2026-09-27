@@ -68,8 +68,9 @@ end
 local function set_flag_locally(envelope, name, on)
   envelope.flags = envelope.flags or {}
 
+  -- Without case, as util.has_flag compares: the envelope may spell it "Seen".
   for i, f in ipairs(envelope.flags) do
-    if f.iana == name then
+    if tostring(f.iana):lower() == tostring(name):lower() then
       if not on then
         table.remove(envelope.flags, i)
       end

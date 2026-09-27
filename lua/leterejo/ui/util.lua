@@ -350,9 +350,15 @@ end
 
 -- Whether an envelope carries a flag. himalaya reports them by IANA keyword
 -- without the backslash: "seen", "answered", "flagged", "draft".
+--
+-- Compared without case. The envelopes built from notmuch spell them as the
+-- IMAP flags are spelled — "Seen", "Flagged" — and every caller asks in lower
+-- case, so until this compared both the same way every message read as unread
+-- and none as flagged.
 function M.has_flag(envelope, name)
+  name = tostring(name):lower()
   for _, f in ipairs(envelope.flags or {}) do
-    if f.iana == name then
+    if tostring(f.iana):lower() == name then
       return true
     end
   end
