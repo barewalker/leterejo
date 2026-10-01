@@ -400,6 +400,13 @@ end
 
 -- Quote a message id for use in a query. Ids routinely contain $ and other
 -- characters the query parser would otherwise read as syntax.
+-- Every call that names its messages — by id, by thread, by a list of ids —
+-- passes --exclude=false. The index is written with exclude_tags=deleted;spam
+-- (see setup.lua), and notmuch applies that to show, search and count alike:
+-- a spam message asked for by its own id comes back as nothing at all, so the
+-- spam mailbox listed its mail and opened every message blank. The exclusion
+-- belongs to the lists, which keep it; a list that names tag:spam has it lifted
+-- by notmuch itself.
 local function id_query(id)
   return 'id:"' .. tostring(id):gsub('"', '\\"') .. '"'
 end
@@ -487,6 +494,7 @@ function M.list_at(account, query, offset, size, sort, on_done)
       pending = pending + 1
       run_json(account, {
         "show",
+        "--exclude=false",
         "--format=json",
         "--body=false",
         "--entire-thread=false",
@@ -625,7 +633,7 @@ function M.list_threads(account, query, offset, limit, sort, on_done)
       table.insert(ids, id_query(row.id))
     end
 
-    run(account, { "search", "--output=files", table.concat(ids, " or ") }, function(ok2, out2)
+    run(account, { "search", "--exclude=false", "--output=files", table.concat(ids, " or ") }, function(ok2, out2)
       if ok2 then
         local subject_of = {}
         for path in tostring(out2):gmatch("[^\n]+") do
@@ -653,6 +661,7 @@ end
 function M.thread_messages(account, thread, on_done)
   run_json(account, {
     "show",
+    "--exclude=false",
     "--format=json",
     "--body=false",
     "--entire-thread=true",
@@ -706,6 +715,7 @@ end
 local function html_part_id(account, id, on_done)
   run_json(account, {
     "show",
+    "--exclude=false",
     "--format=json",
     "--body=true",
     "--entire-thread=false",
@@ -851,7 +861,7 @@ end
 -- carries, so nothing built on it can answer "what did the server say about
 -- this". This reads the file.
 function M.raw(account, id, on_done)
-  run(account, { "show", "--format=raw", "--entire-thread=false", id_query(id) }, on_done)
+  run(account, { "show", "--exclude=false", "--format=raw", "--entire-thread=false", id_query(id) }, on_done)
 end
 
 -- Reading a rendering ---------------------------------------------------------
@@ -1096,6 +1106,7 @@ local function redecode_jis(account, id, text, on_done)
     end
     run(account, {
       "show",
+      "--exclude=false",
       "--format=raw",
       "--part=" .. tostring(part),
       "--entire-thread=false",
@@ -1119,7 +1130,7 @@ function M.read(account, id, on_done, opts)
   -- The markers are kept until the last moment: which alternative is shown is
   -- decided by taking the other one out, and only the markers say where it is.
   local function show(extra, cb)
-    local args = { "show", "--format=text", "--entire-thread=false" }
+    local args = { "show", "--exclude=false", "--format=text", "--entire-thread=false" }
     vim.list_extend(args, extra)
     table.insert(args, id_query(id))
     run(account, args, cb)
@@ -1156,6 +1167,7 @@ function M.read(account, id, on_done, opts)
 
       run(account, {
         "show",
+        "--exclude=false",
         "--format=raw",
         "--part=" .. tostring(part),
         "--entire-thread=false",
@@ -1228,6 +1240,7 @@ end
 function M.draft_text(account, id, on_done)
   run_json(account, {
     "show",
+    "--exclude=false",
     "--format=json",
     "--entire-thread=false",
     "--body=true",
@@ -1321,7 +1334,7 @@ end
 
 -- Ask notmuch which files hold this message.
 local function files_of(account, id, on_done)
-  run(account, { "search", "--output=files", id_query(id) }, function(ok, out)
+  run(account, { "search", "--exclude=false", "--output=files", id_query(id) }, function(ok, out)
     if not ok then
       return on_done({})
     end
@@ -1380,6 +1393,7 @@ end
 function M.attachments(account, id, on_done)
   run_json(account, {
     "show",
+    "--exclude=false",
     "--format=json",
     "--body=true",
     "--entire-thread=false",
@@ -1511,6 +1525,7 @@ function M.save_part(account, id, part, path, on_done)
   vim.system({
     executable(),
     "show",
+    "--exclude=false",
     "--format=raw",
     "--part=" .. tostring(part),
     "--entire-thread=false",
@@ -1550,6 +1565,7 @@ function M.save_attachments(account, id, dir, on_done)
       local cmd = {
         executable(),
         "show",
+        "--exclude=false",
         "--format=raw",
         "--part=" .. tostring(att.part),
         "--entire-thread=false",
@@ -1617,7 +1633,7 @@ local function pattern_for(name)
 end
 
 function M.headers_of(account, id, names, on_done)
-  run(account, { "search", "--output=files", id_query(id) }, function(ok, out)
+  run(account, { "search", "--exclude=false", "--output=files", id_query(id) }, function(ok, out)
     if not ok then
       return on_done(false, out)
     end
@@ -1905,7 +1921,7 @@ function M.count_missed(account, ids, change, on_done)
   end
 
   per_group(account, ids, function(group)
-    return { "count", "--output=messages", missed_in(group, change) }
+    return { "count", "--exclude=false", "--output=messages", missed_in(group, change) }
   end, function(ok, results)
     if not ok then
       return on_done(false, results)
@@ -1951,7 +1967,7 @@ end
 -- Used to check that a write survived the sync: lieer reverts a change it could
 -- not push, so the tag we set is the only honest evidence that it stuck.
 function M.tags_of(account, id, on_done)
-  run(account, { "search", "--format=json", "--output=tags", id_query(id) }, function(ok, out)
+  run(account, { "search", "--exclude=false", "--format=json", "--output=tags", id_query(id) }, function(ok, out)
     if not ok then
       return on_done(false, out)
     end
@@ -1979,7 +1995,7 @@ function M.tags_of_many(account, ids, on_done)
   local counted, seen, union = {}, 0, {}
 
   per_group(account, ids, function(group)
-    return { "show", "--format=json", "--body=false", "--entire-thread=false", group }
+    return { "show", "--exclude=false", "--format=json", "--body=false", "--entire-thread=false", group }
   end, function(ok, results)
     if not ok then
       return on_done(false, results)
@@ -2186,7 +2202,7 @@ function M.move_to_folder(account, ids, from, to, on_done)
     end
 
     per_group(account, ids, function(group)
-      return { "search", "--output=files", "--", group }
+      return { "search", "--exclude=false", "--output=files", "--", group }
     end, function(found, outs)
       if not found then
         return on_done(false, outs)
@@ -2245,7 +2261,7 @@ end
 
 -- Every tag in the index, in order.
 local function all_tags(account, on_done)
-  run(account, { "search", "--format=json", "--output=tags", "*" }, function(ok, out)
+  run(account, { "search", "--exclude=false", "--format=json", "--output=tags", "*" }, function(ok, out)
     if not ok then
       return on_done(false, out)
     end
